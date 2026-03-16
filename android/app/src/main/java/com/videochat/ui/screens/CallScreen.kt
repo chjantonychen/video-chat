@@ -36,7 +36,6 @@ fun CallScreen(
     val isSpeakerOn by viewModel.isSpeakerOn.collectAsState()
     val isCameraOn by viewModel.isCameraOn.collectAsState()
 
-    // 初始化通话
     LaunchedEffect(callId) {
         viewModel.initializeCall(callId, remoteUserId, isVideo, isCaller)
     }
@@ -48,9 +47,7 @@ fun CallScreen(
     }
 
     LaunchedEffect(Unit) {
-        val permissions = mutableListOf(
-            Manifest.permission.RECORD_AUDIO
-        )
+        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (isVideo) {
             permissions.add(Manifest.permission.CAMERA)
         }
@@ -81,9 +78,7 @@ fun CallScreen(
         ) {
             when (callState) {
                 is CallState.Idle -> {
-                    CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center)
-                    )
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                 }
 
                 is CallState.Calling -> {
@@ -91,6 +86,18 @@ fun CallScreen(
                         modifier = Modifier.align(Alignment.Center),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        if (isVideo) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(300.dp)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("本地预览", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
                         CircularProgressIndicator()
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("等待对方接听...")
@@ -103,17 +110,14 @@ fun CallScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Icon(
-                            Icons.Default.Phone,
-                            contentDescription = null,
+                            Icons.Default.Phone, contentDescription = null,
                             modifier = Modifier.size(64.dp),
                             tint = MaterialTheme.colorScheme.primary
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("来电")
                         Spacer(modifier = Modifier.height(24.dp))
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(32.dp)
-                        ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
                             FilledIconButton(
                                 onClick = { viewModel.acceptCall() },
                                 modifier = Modifier.size(64.dp),
@@ -121,11 +125,7 @@ fun CallScreen(
                                     containerColor = MaterialTheme.colorScheme.primary
                                 )
                             ) {
-                                Icon(
-                                    Icons.Default.Call,
-                                    contentDescription = "接听",
-                                    modifier = Modifier.size(32.dp)
-                                )
+                                Icon(Icons.Default.Call, contentDescription = "接听", modifier = Modifier.size(32.dp))
                             }
                             FilledIconButton(
                                 onClick = { viewModel.rejectCall() },
@@ -134,21 +134,25 @@ fun CallScreen(
                                     containerColor = MaterialTheme.colorScheme.error
                                 )
                             ) {
-                                Icon(
-                                    Icons.Default.CallEnd,
-                                    contentDescription = "拒绝",
-                                    modifier = Modifier.size(32.dp)
-                                )
+                                Icon(Icons.Default.CallEnd, contentDescription = "拒绝", modifier = Modifier.size(32.dp))
                             }
                         }
                     }
                 }
 
-                is CallState.Connected -> {
+                is CallState.Connecting -> {
                     Column(
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        // 远程视频或占位符
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("正在连接...")
+                    }
+                }
+
+                is CallState.Connected -> {
+                    Column(modifier = Modifier.fillMaxSize()) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -157,30 +161,19 @@ fun CallScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             if (isVideo) {
-                                // 远程视频渲染占位符
-                                // 实际需要通过WebRTC流获取远程视频
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Icon(
-                                        Icons.Default.Person,
-                                        contentDescription = null,
+                                        Icons.Default.Person, contentDescription = null,
                                         modifier = Modifier.size(80.dp),
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        "对方视频",
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                    Text("对方视频", color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             } else {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Icon(
-                                        Icons.Default.Person,
-                                        contentDescription = null,
+                                        Icons.Default.Person, contentDescription = null,
                                         modifier = Modifier.size(120.dp),
                                         tint = MaterialTheme.colorScheme.primary
                                     )
@@ -190,22 +183,18 @@ fun CallScreen(
                             }
                         }
 
-                        // 通话控制按钮
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(24.dp),
                             horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
-                            // 静音按钮
                             IconButton(
                                 onClick = { viewModel.toggleMute() },
                                 modifier = Modifier.size(56.dp),
                                 colors = IconButtonDefaults.iconButtonColors(
-                                    containerColor = if (isMuted)
-                                        MaterialTheme.colorScheme.errorContainer
-                                    else
-                                        MaterialTheme.colorScheme.surfaceVariant
+                                    containerColor = if (isMuted) MaterialTheme.colorScheme.errorContainer
+                                    else MaterialTheme.colorScheme.surfaceVariant
                                 )
                             ) {
                                 Icon(
@@ -217,15 +206,12 @@ fun CallScreen(
                                 )
                             }
 
-                            // 扬声器按钮
                             IconButton(
                                 onClick = { viewModel.toggleSpeaker() },
                                 modifier = Modifier.size(56.dp),
                                 colors = IconButtonDefaults.iconButtonColors(
-                                    containerColor = if (isSpeakerOn)
-                                        MaterialTheme.colorScheme.primaryContainer
-                                    else
-                                        MaterialTheme.colorScheme.surfaceVariant
+                                    containerColor = if (isSpeakerOn) MaterialTheme.colorScheme.primaryContainer
+                                    else MaterialTheme.colorScheme.surfaceVariant
                                 )
                             ) {
                                 Icon(
@@ -235,16 +221,13 @@ fun CallScreen(
                                 )
                             }
 
-                            // 摄像头按钮（视频通话）
                             if (isVideo) {
                                 IconButton(
                                     onClick = { viewModel.toggleCamera() },
                                     modifier = Modifier.size(56.dp),
                                     colors = IconButtonDefaults.iconButtonColors(
-                                        containerColor = if (!isCameraOn)
-                                            MaterialTheme.colorScheme.errorContainer
-                                        else
-                                            MaterialTheme.colorScheme.surfaceVariant
+                                        containerColor = if (!isCameraOn) MaterialTheme.colorScheme.errorContainer
+                                        else MaterialTheme.colorScheme.surfaceVariant
                                     )
                                 ) {
                                     Icon(
@@ -256,7 +239,6 @@ fun CallScreen(
                                     )
                                 }
 
-                                // 切换摄像头按钮
                                 IconButton(
                                     onClick = { viewModel.switchCamera() },
                                     modifier = Modifier.size(56.dp),
@@ -264,28 +246,19 @@ fun CallScreen(
                                         containerColor = MaterialTheme.colorScheme.surfaceVariant
                                     )
                                 ) {
-                                    Icon(
-                                        Icons.Default.Cameraswitch,
-                                        contentDescription = "切换摄像头",
-                                        modifier = Modifier.size(32.dp)
-                                    )
+                                    Icon(Icons.Default.Cameraswitch, contentDescription = "切换", modifier = Modifier.size(32.dp))
                                 }
                             }
 
-                            // 结束通话按钮
                             IconButton(
-                                onClick = {
-                                    viewModel.endCall()
-                                    onEndCall()
-                                },
+                                onClick = { viewModel.endCall(); onEndCall() },
                                 modifier = Modifier.size(56.dp),
                                 colors = IconButtonDefaults.iconButtonColors(
                                     containerColor = MaterialTheme.colorScheme.errorContainer
                                 )
                             ) {
                                 Icon(
-                                    Icons.Default.CallEnd,
-                                    contentDescription = "结束通话",
+                                    Icons.Default.CallEnd, contentDescription = "结束",
                                     tint = MaterialTheme.colorScheme.error,
                                     modifier = Modifier.size(32.dp)
                                 )
@@ -295,9 +268,7 @@ fun CallScreen(
                 }
 
                 is CallState.Ended -> {
-                    LaunchedEffect(Unit) {
-                        onEndCall()
-                    }
+                    LaunchedEffect(Unit) { onEndCall() }
                 }
 
                 is CallState.Error -> {
@@ -306,20 +277,14 @@ fun CallScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Icon(
-                            Icons.Default.Error,
-                            contentDescription = null,
+                            Icons.Default.Error, contentDescription = null,
                             modifier = Modifier.size(48.dp),
                             tint = MaterialTheme.colorScheme.error
                         )
                         Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            "通话错误: ${(callState as CallState.Error).message}",
-                            color = MaterialTheme.colorScheme.error
-                        )
+                        Text("通话错误: ${(callState as CallState.Error).message}", color = MaterialTheme.colorScheme.error)
                         Spacer(modifier = Modifier.height(16.dp))
-                        Button(onClick = onEndCall) {
-                            Text("返回")
-                        }
+                        Button(onClick = onEndCall) { Text("返回") }
                     }
                 }
             }

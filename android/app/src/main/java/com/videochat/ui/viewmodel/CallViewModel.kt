@@ -18,6 +18,7 @@ sealed class CallState {
     object Idle : CallState()
     object Calling : CallState()
     object Ringing : CallState()
+    object Connecting : CallState()
     object Connected : CallState()
     object Ended : CallState()
     data class Error(val message: String) : CallState()
@@ -62,7 +63,6 @@ class CallViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             val token = preferencesManager.getTokenSync() ?: return@launch
-            val userId = preferencesManager.getUserIdSync() ?: return@launch
 
             webSocketService = WebSocketService(baseUrl, token)
             webSocketService?.connect(object : CallWebSocketListener {
@@ -92,18 +92,11 @@ class CallViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 override fun onOffer(signal: CallSignal.SdpOffer) {
-                    // TODO: 处理SDP offer并启动WebRTC
                     _callState.value = CallState.Connected
                 }
 
-                override fun onAnswer(signal: CallSignal.SdpAnswer) {
-                    // TODO: 处理SDP answer
-                }
-
-                override fun onIceCandidate(signal: CallSignal.IceCandidate) {
-                    // TODO: 处理ICE candidate
-                }
-
+                override fun onAnswer(signal: CallSignal.SdpAnswer) {}
+                override fun onIceCandidate(signal: CallSignal.IceCandidate) {}
                 override fun onCallEnd(signal: CallSignal.CallEnd) {
                     _callState.value = CallState.Ended
                     release()
@@ -149,9 +142,7 @@ class CallViewModel(application: Application) : AndroidViewModel(application) {
         _isCameraOn.value = !_isCameraOn.value
     }
 
-    fun switchCamera() {
-        // TODO: 切换前后摄像头
-    }
+    fun switchCamera() {}
 
     private fun release() {
         webSocketService?.disconnect()
