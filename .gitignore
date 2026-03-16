@@ -1,0 +1,23 @@
+# Build outputs
+android/app/build/
+android/.gradle/
+android/build/
+backend/target/
+backend/*.db
+backend/uploads/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+*.properties.local
