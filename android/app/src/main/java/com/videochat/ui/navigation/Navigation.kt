@@ -19,9 +19,9 @@ sealed class Screen(val route: String) {
     object Chat : Screen("chat/{friendId}") {
         fun createRoute(friendId: Long) = "chat/$friendId"
     }
-    object Call : Screen("call/{callId}/{isVideo}/{isCaller}") {
-        fun createRoute(callId: Long, isVideo: Boolean, isCaller: Boolean) = "call/$callId/$isVideo/$isCaller"
-    }
+object Call : Screen("call/{callId}/{isVideo}/{isCaller}/{remoteUserId}") {
+    fun createRoute(callId: Long, isVideo: Boolean, isCaller: Boolean, remoteUserId: Long) = "call/$callId/$isVideo/$isCaller/$remoteUserId"
+}
 }
 
 @Composable
@@ -68,39 +68,42 @@ fun AppNavigation(navController: NavHostController, isLoggedIn: Boolean, authRep
             )
         }
         
-        composable(
-            route = Screen.Chat.route,
-            arguments = listOf(navArgument("friendId") { type = NavType.LongType })
-        ) { backStackEntry ->
-            val friendId = backStackEntry.arguments?.getLong("friendId") ?: 0L
-            ChatScreen(
-                friendId = friendId,
-                onNavigateBack = { navController.popBackStack() },
-                onStartCall = { isVideo ->
-                    navController.navigate(Screen.Call.createRoute(0, isVideo, true))
-                },
-                messageRepository = messageRepository,
-                preferencesManager = preferencesManager
-            )
-        }
+composable(
+    route = Screen.Chat.route,
+    arguments = listOf(navArgument("friendId") { type = NavType.LongType })
+) { backStackEntry ->
+    val friendId = backStackEntry.arguments?.getLong("friendId") ?: 0L
+    ChatScreen(
+        friendId = friendId,
+        onNavigateBack = { navController.popBackStack() },
+        onStartCall = { isVideo ->
+            navController.navigate(Screen.Call.createRoute(0, isVideo, true, friendId))
+        },
+        messageRepository = messageRepository,
+        preferencesManager = preferencesManager
+    )
+}
         
-        composable(
-            route = Screen.Call.route,
-            arguments = listOf(
-                navArgument("callId") { type = NavType.LongType },
-                navArgument("isVideo") { type = NavType.BoolType },
-                navArgument("isCaller") { type = NavType.BoolType }
-            )
-        ) { backStackEntry ->
-            val callId = backStackEntry.arguments?.getLong("callId") ?: 0L
-            val isVideo = backStackEntry.arguments?.getBoolean("isVideo") ?: false
-            val isCaller = backStackEntry.arguments?.getBoolean("isCaller") ?: true
-            CallScreen(
-                callId = callId,
-                isVideo = isVideo,
-                isCaller = isCaller,
-                onEndCall = { navController.popBackStack() }
-            )
-        }
+composable(
+    route = Screen.Call.route,
+    arguments = listOf(
+        navArgument("callId") { type = NavType.LongType },
+        navArgument("isVideo") { type = NavType.BoolType },
+        navArgument("isCaller") { type = NavType.BoolType },
+        navArgument("remoteUserId") { type = NavType.LongType }
+    )
+) { backStackEntry ->
+    val callId = backStackEntry.arguments?.getLong("callId") ?: 0L
+    val isVideo = backStackEntry.arguments?.getBoolean("isVideo") ?: false
+    val isCaller = backStackEntry.arguments?.getBoolean("isCaller") ?: true
+    val remoteUserId = backStackEntry.arguments?.getLong("remoteUserId") ?: 0L
+    CallScreen(
+        callId = callId,
+        isVideo = isVideo,
+        isCaller = isCaller,
+        remoteUserId = remoteUserId,
+        onEndCall = { navController.popBackStack() }
+    )
+}
     }
 }

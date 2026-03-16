@@ -68,13 +68,10 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("com.google.code.gson:gson:2.10.1")
     
-    // Material Icons Extended
-    implementation("androidx.compose.material:material-icons-extended")
-    
-    // WebRTC - placeholder (add specific version after testing)
-    // implementation("org.webrtc:google-webrtc:1.0.32006")
-    
-    // Image loading
+// Material Icons Extended
+implementation("androidx.compose.material:material-icons-extended")
+
+// Image loading
     implementation("io.coil-kt:coil-compose:2.5.0")
     
     // DataStore
