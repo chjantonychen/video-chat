@@ -20,7 +20,7 @@ mybatis-plus:
     map-underscore-to-camel-case: true
   global-config:
     db-config:
-      id-type: auto
+      id-type: assign_id
 
 jwt:
   secret: video-chat-secret-key-2024-very-long-secret-key-for-production

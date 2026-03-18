@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 @Data
 @TableName("friend_request")
 public class FriendRequest {
-    @TableId(type = IdType.AUTO)
+    @TableId(type = IdType.ASSIGN_ID)
     private Long id;
     private Long fromUserId;
     private Long toUserId;

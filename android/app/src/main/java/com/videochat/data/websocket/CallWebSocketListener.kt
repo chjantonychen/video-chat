@@ -6,6 +6,7 @@ interface CallWebSocketListener {
     fun onConnected()
     fun onDisconnected()
     fun onCallInvite(signal: CallSignal.CallInvite)
+    fun onCallInviteConfirm(signal: CallSignal.CallInviteConfirm)
     fun onCallResponse(signal: CallSignal.CallResponse)
     fun onOffer(signal: CallSignal.SdpOffer)
     fun onAnswer(signal: CallSignal.SdpAnswer)

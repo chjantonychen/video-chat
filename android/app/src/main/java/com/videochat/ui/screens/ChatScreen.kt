@@ -52,6 +52,7 @@ data class ChatMessage(
 @Composable
 fun ChatScreen(
     friendId: Long,
+    isVideoCall: Boolean = false,
     onNavigateBack: () -> Unit,
     onStartCall: (Boolean) -> Unit,
     messageRepository: MessageRepository,
@@ -125,39 +126,48 @@ messageRepository.uploadFile(tempFile).onSuccess { url ->
         }
     }
 
-// Load user info and messages
-LaunchedEffect(friendId) {
-    Log.d("ChatScreen", "Loading user info and messages for friendId=$friendId")
-    
-    // First load user info from local storage
-    var userId = preferencesManager.getUserIdSync()
-    var username = preferencesManager.getUsernameSync()
-    Log.d("ChatScreen", "Local storage - userId=$userId, username=$username")
+    // Load user info and messages
+    LaunchedEffect(friendId) {
+        Log.d("ChatScreen", "Loading user info and messages for friendId=$friendId")
+        
+        // First load user info from local storage
+        var userId = preferencesManager.getUserIdSync()
+        var username = preferencesManager.getUsernameSync()
+        Log.d("ChatScreen", "Local storage - userId=$userId, username=$username")
 
-    // If not found in local storage, try to fetch from API
-    if (userId == null || username == null) {
-        try {
-            Log.d("ChatScreen", "Fetching user info from API...")
-            val userResponse = RetrofitClient.apiService.getMe()
-            Log.d("ChatScreen", "API response: ${userResponse.code()}")
-            if (userResponse.isSuccessful) {
-                userResponse.body()?.let { user ->
-                    userId = user.id
-                    username = user.username
-                    Log.d("ChatScreen", "Got user from API: id=${user.id}, username=${user.username}")
-                    // Save to local storage for future use
-                    preferencesManager.saveUserInfo(user.id, user.username)
+        // If not found in local storage, try to fetch from API
+        if (userId == null || username == null) {
+            try {
+                Log.d("ChatScreen", "Fetching user info from API...")
+                val userResponse = RetrofitClient.apiService.getMe()
+                Log.d("ChatScreen", "API response: ${userResponse.code()}")
+                if (userResponse.isSuccessful) {
+                    userResponse.body()?.let { user ->
+                        userId = user.id
+                        username = user.username
+                        Log.d("ChatScreen", "Got user from API: id=${user.id}, username=${user.username}")
+                        // Save to local storage for future use
+                        preferencesManager.saveUserInfo(user.id, user.username)
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e("ChatScreen", "Failed to fetch user from API", e)
             }
-        } catch (e: Exception) {
-            Log.e("ChatScreen", "Failed to fetch user from API", e)
         }
-    }
 
-    currentUserId = userId
-    currentUsername = username ?: ""
+        currentUserId = userId
+        currentUsername = username ?: ""
 
-// Then load messages with currentUserId available
+        // Auto-start call if triggered from video/voice call button
+        if (isVideoCall && userId != null) {
+            android.util.Log.d("ChatScreen", "========== Auto-starting video call ==========")
+            android.util.Log.d("ChatScreen", "friendId=$friendId, userId=$userId")
+            // 延迟一点时间再导航，让当前Composition完成
+            kotlinx.coroutines.delay(100)
+            onStartCall(true)
+        }
+
+        // Then load messages with currentUserId available
         if (userId != null) {
             Log.d("ChatScreen", "Loading messages for userId=$userId")
             
@@ -204,10 +214,11 @@ LaunchedEffect(friendId) {
                     }
                 },
                 actions = {
-                    IconButton(onClick = { onStartCall(false) }) {
-                        Icon(Icons.Default.Call, contentDescription = "语音通话")
-                    }
-                    IconButton(onClick = { onStartCall(true) }) {
+IconButton(onClick = { Log.d("ChatScreen", "Voice call button clicked"); onStartCall(false) }) {
+            Icon(Icons.Default.Call, contentDescription = "语音通话")
+        }
+
+        IconButton(onClick = { Log.d("ChatScreen", "Video call button clicked"); onStartCall(true) }) {
                         Icon(Icons.Default.Videocam, contentDescription = "视频通话")
                     }
                 }

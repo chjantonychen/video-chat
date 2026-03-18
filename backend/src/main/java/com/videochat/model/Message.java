@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 @Data
 @TableName("message")
 public class Message {
-    @TableId(type = IdType.AUTO)
+    @TableId(type = IdType.ASSIGN_ID)
     private Long id;
     private Long fromUserId;
     private Long toUserId;

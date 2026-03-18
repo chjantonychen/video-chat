@@ -16,16 +16,23 @@ sealed class Screen(val route: String) {
     object Login : Screen("login")
     object Register : Screen("register")
     object Home : Screen("home")
-    object Chat : Screen("chat/{friendId}") {
-        fun createRoute(friendId: Long) = "chat/$friendId"
+    object Chat : Screen("chat/{friendId}/{isVideoCall}") {
+        fun createRoute(friendId: Long, isVideoCall: Boolean = false) = "chat/$friendId/$isVideoCall"
     }
-object Call : Screen("call/{callId}/{isVideo}/{isCaller}/{remoteUserId}") {
-    fun createRoute(callId: Long, isVideo: Boolean, isCaller: Boolean, remoteUserId: Long) = "call/$callId/$isVideo/$isCaller/$remoteUserId"
-}
+    object Call : Screen("call/{callId}/{isVideo}/{isCaller}/{remoteUserId}") {
+        fun createRoute(callId: Long, isVideo: Boolean, isCaller: Boolean, remoteUserId: Long) = "call/$callId/$isVideo/$isCaller/$remoteUserId"
+    }
 }
 
 @Composable
-fun AppNavigation(navController: NavHostController, isLoggedIn: Boolean, authRepository: AuthRepository, friendRepository: FriendRepository, messageRepository: MessageRepository, preferencesManager: PreferencesManager) {
+fun AppNavigation(
+    navController: NavHostController,
+    isLoggedIn: Boolean,
+    authRepository: AuthRepository,
+    friendRepository: FriendRepository,
+    messageRepository: MessageRepository,
+    preferencesManager: PreferencesManager
+) {
     NavHost(
         navController = navController,
         startDestination = if (isLoggedIn) Screen.Home.route else Screen.Login.route
@@ -56,54 +63,67 @@ fun AppNavigation(navController: NavHostController, isLoggedIn: Boolean, authRep
         
         composable(Screen.Home.route) {
             HomeScreen(
-                onNavigateToChat = { friendId ->
-                    navController.navigate(Screen.Chat.createRoute(friendId))
+                onNavigateToChat = { friendId, isVideoCall ->
+                    navController.navigate(Screen.Chat.createRoute(friendId, isVideoCall))
+                },
+                onNavigateToCall = { callId, isVideo, isCaller, remoteUserId ->
+                    navController.navigate(Screen.Call.createRoute(callId, isVideo, isCaller, remoteUserId))
                 },
                 onLogout = {
                     navController.navigate(Screen.Login.route) {
                         popUpTo(0) { inclusive = true }
                     }
                 },
-                friendRepository = friendRepository
+                friendRepository = friendRepository,
+                preferencesManager = preferencesManager
             )
         }
         
-composable(
-    route = Screen.Chat.route,
-    arguments = listOf(navArgument("friendId") { type = NavType.LongType })
-) { backStackEntry ->
-    val friendId = backStackEntry.arguments?.getLong("friendId") ?: 0L
-    ChatScreen(
-        friendId = friendId,
-        onNavigateBack = { navController.popBackStack() },
-        onStartCall = { isVideo ->
-            navController.navigate(Screen.Call.createRoute(0, isVideo, true, friendId))
-        },
-        messageRepository = messageRepository,
-        preferencesManager = preferencesManager
-    )
-}
+        composable(
+            route = Screen.Chat.route,
+            arguments = listOf(
+                navArgument("friendId") { type = NavType.LongType },
+                navArgument("isVideoCall") { type = NavType.BoolType; defaultValue = false }
+            )
+        ) { backStackEntry ->
+            val friendId = backStackEntry.arguments?.getLong("friendId") ?: 0L
+            val isVideoCall = backStackEntry.arguments?.getBoolean("isVideoCall") ?: false
+            ChatScreen(
+                friendId = friendId,
+                isVideoCall = isVideoCall,
+                onNavigateBack = { navController.popBackStack() },
+                onStartCall = { isVideo ->
+                    navController.navigate(Screen.Call.createRoute(0, isVideo, true, friendId))
+                },
+                messageRepository = messageRepository,
+                preferencesManager = preferencesManager
+            )
+        }
         
-composable(
-    route = Screen.Call.route,
-    arguments = listOf(
-        navArgument("callId") { type = NavType.LongType },
-        navArgument("isVideo") { type = NavType.BoolType },
-        navArgument("isCaller") { type = NavType.BoolType },
-        navArgument("remoteUserId") { type = NavType.LongType }
-    )
-) { backStackEntry ->
-    val callId = backStackEntry.arguments?.getLong("callId") ?: 0L
-    val isVideo = backStackEntry.arguments?.getBoolean("isVideo") ?: false
-    val isCaller = backStackEntry.arguments?.getBoolean("isCaller") ?: true
-    val remoteUserId = backStackEntry.arguments?.getLong("remoteUserId") ?: 0L
-    CallScreen(
-        callId = callId,
-        isVideo = isVideo,
-        isCaller = isCaller,
-        remoteUserId = remoteUserId,
-        onEndCall = { navController.popBackStack() }
-    )
-}
+        composable(
+            route = Screen.Call.route,
+            arguments = listOf(
+                navArgument("callId") { type = NavType.LongType },
+                navArgument("isVideo") { type = NavType.BoolType },
+                navArgument("isCaller") { type = NavType.BoolType },
+                navArgument("remoteUserId") { type = NavType.LongType }
+            )
+        ) { backStackEntry ->
+            val callId = backStackEntry.arguments?.getLong("callId") ?: 0L
+            val isVideo = backStackEntry.arguments?.getBoolean("isVideo") ?: false
+            val isCaller = backStackEntry.arguments?.getBoolean("isCaller") ?: false
+            val remoteUserId = backStackEntry.arguments?.getLong("remoteUserId") ?: 0L
+            
+            android.util.Log.d("Navigation", "========== CallScreen params ==========")
+            android.util.Log.d("Navigation", "callId=$callId, isVideo=$isVideo, isCaller=$isCaller, remoteUserId=$remoteUserId")
+            
+            CallScreen(
+                callId = callId,
+                isVideo = isVideo,
+                isCaller = isCaller,
+                remoteUserId = remoteUserId,
+                onEndCall = { navController.popBackStack() }
+            )
+        }
     }
 }

@@ -13,11 +13,23 @@ sealed class CallSignal {
         val callType: Int
     ) : CallSignal()
 
+    // 呼叫确认（服务器返回给主叫方，包含callId）
+    data class CallInviteConfirm(
+        @SerializedName("callId")
+        val callId: Long,
+        @SerializedName("toUserId")
+        val toUserId: Long,
+        @SerializedName("callType")
+        val callType: Int
+    ) : CallSignal()
+
     data class CallResponse(
         @SerializedName("callId")
         val callId: Long,
         @SerializedName("accept")
-        val accept: Boolean
+        val accept: Boolean,
+        @SerializedName("toUserId")
+        val toUserId: Long?
     ) : CallSignal()
 
     data class SdpOffer(
@@ -56,6 +68,8 @@ data class SignalMessage(
     val type: String,
     val callId: Long? = null,
     val fromUserId: Long? = null,
+    val toUserId: Long? = null,
+    val targetUserId: Long? = null,  // 接收者ID，用于过滤消息
     val callType: Int? = null,
     val accept: Boolean? = null,
     val sdp: String? = null,

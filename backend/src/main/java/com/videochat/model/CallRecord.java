@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 @Data
 @TableName("call_record")
 public class CallRecord {
-    @TableId(type = IdType.AUTO)
+    @TableId(type = IdType.ASSIGN_ID)
     private Long id;
     private Long callerId;
     private Long calleeId;

@@ -10,7 +10,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import android.util.Log
+import android.content.Context
+import com.videochat.data.local.PreferencesManager
+import com.videochat.data.manager.CallManager
 import com.videochat.data.model.FriendRequest
 import com.videochat.data.model.User
 import com.videochat.data.repository.FriendRepository
@@ -27,17 +32,62 @@ data class FriendItem(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
-    onNavigateToChat: (Long) -> Unit,
+    onNavigateToChat: (Long, Boolean) -> Unit,
+    onNavigateToCall: (Long, Boolean, Boolean, Long) -> Unit,
     onLogout: () -> Unit,
-    friendRepository: FriendRepository
+    friendRepository: FriendRepository,
+    preferencesManager: com.videochat.data.local.PreferencesManager
 ) {
+    val context = LocalContext.current
     var selectedTab by remember { mutableStateOf(0) }
     var showAddFriendDialog by remember { mutableStateOf(false) }
     var friends by remember { mutableStateOf<List<User>>(emptyList()) }
     var friendRequests by remember { mutableStateOf<List<FriendRequest>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    
+
+    // 初始化CallManager来接收来电通知
+    LaunchedEffect(Unit) {
+        android.util.Log.d("HomeScreen", "========== HomeScreen LaunchedEffect START ==========")
+        val token = preferencesManager.getTokenSync()
+        val userId = preferencesManager.getUserIdSync()
+        android.util.Log.d("HomeScreen", "token=${token != null}, userId=$userId")
+        if (token != null && userId != null) {
+            val app = context.applicationContext as android.app.Application
+            android.util.Log.d("HomeScreen", "Initializing CallManager for userId=$userId")
+            val callManager = CallManager.getInstance(app)
+            callManager.callListener = object : CallManager.CallListener {
+                override fun onIncomingCall(callId: Long, fromUserId: Long, callType: Int, callerName: String) {
+                    android.util.Log.d("HomeScreen", "========== onIncomingCall ==========")
+                    android.util.Log.d("HomeScreen", "callId=$callId, fromUserId=$fromUserId, callType=$callType")
+                    // 收到来电，跳转到通话界面
+                    val isVideo = callType == 2
+                    onNavigateToCall(callId, isVideo, false, fromUserId)
+                }
+                
+                override fun onCallResponse(callId: Long, accept: Boolean, toUserId: Long?) {
+                    android.util.Log.d("HomeScreen", "========== onCallResponse ==========")
+                    android.util.Log.d("HomeScreen", "callId=$callId, accept=$accept, toUserId=$toUserId")
+                    // 主叫收到对方接受响应，跳转到通话界面
+                    if (accept && toUserId != null) {
+                        onNavigateToCall(0, true, true, toUserId)
+                    }
+                }
+                
+                override fun onCallEnded(callId: Long) {
+                    android.util.Log.d("HomeScreen", "========== onCallEnded ==========")
+                    android.util.Log.d("HomeScreen", "callId=$callId")
+                    // 对方结束了通话，不需要特殊处理，会在CallScreen中处理
+                }
+            }
+            callManager.connect(token, userId)
+            android.util.Log.d("HomeScreen", "CallManager.connect called")
+        } else {
+            android.util.Log.w("HomeScreen", "Token or userId is null, cannot initialize CallManager")
+        }
+        android.util.Log.d("HomeScreen", "========== HomeScreen LaunchedEffect END ==========")
+    }
+
     LaunchedEffect(selectedTab) {
         if (selectedTab == 0) {
             isLoading = true
@@ -98,15 +148,17 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             items(friends) { friend ->
-                                FriendListItem(
-                                    friend = FriendItem(
-                                        id = friend.id,
-                                        username = friend.username,
-                                        nickname = friend.nickname ?: friend.username,
-                                        avatar = friend.avatar
-                                    ),
-                                    onClick = { onNavigateToChat(friend.id) }
-                                )
+FriendListItem(
+    friend = FriendItem(
+        id = friend.id,
+        username = friend.username,
+        nickname = friend.nickname ?: friend.username,
+        avatar = friend.avatar
+    ),
+    onClick = { onNavigateToChat(friend.id, false) },
+    onVideoCall = { onNavigateToChat(friend.id, true) },
+    onVoiceCall = { onNavigateToChat(friend.id, false) }
+)
                             }
                         }
                     }
@@ -161,7 +213,9 @@ fun HomeScreen(
 @Composable
 fun FriendListItem(
     friend: FriendItem,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onVideoCall: () -> Unit = onClick,
+    onVoiceCall: () -> Unit = onClick
 ) {
     Card(
         modifier = Modifier
@@ -195,13 +249,13 @@ fun FriendListItem(
                 Text(friend.username, style = MaterialTheme.typography.bodySmall)
             }
             
-            IconButton(onClick = { /* Voice call */ }) {
-                Icon(Icons.Default.Call, contentDescription = "Voice Call")
-            }
-            
-            IconButton(onClick = { /* Video call */ }) {
-                Icon(Icons.Default.Videocam, contentDescription = "Video Call")
-            }
+IconButton(onClick = { Log.d("HomeScreen", "Voice call button clicked for ${friend.username}"); onVoiceCall() }) {
+    Icon(Icons.Default.Call, contentDescription = "Voice Call")
+}
+
+IconButton(onClick = { Log.d("HomeScreen", "Video call button clicked for ${friend.username}"); onVideoCall() }) {
+    Icon(Icons.Default.Videocam, contentDescription = "Video Call")
+}
         }
     }
 }

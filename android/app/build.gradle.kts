@@ -71,6 +71,9 @@ dependencies {
 // Material Icons Extended
 implementation("androidx.compose.material:material-icons-extended")
 
+// WebRTC - Google official library (Maven Central)
+implementation("io.github.webrtc-sdk:android:125.6422.07")
+
 // Image loading
     implementation("io.coil-kt:coil-compose:2.5.0")
     

@@ -16,10 +16,15 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         config.setApplicationDestinationPrefixes("/app");
     }
     
-    @Override
+@Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
+        // STOMP over SockJS (for web)
         registry.addEndpoint("/ws")
-                .setAllowedOrigins("*")
-                .withSockJS();
+            .setAllowedOrigins("*")
+            .withSockJS();
+        
+        // 原生WebSocket (for Android)
+        registry.addEndpoint("/ws-native")
+            .setAllowedOrigins("*");
     }
 }

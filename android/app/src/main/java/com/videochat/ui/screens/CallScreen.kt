@@ -2,6 +2,7 @@ package com.videochat.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -14,10 +15,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.videochat.ui.viewmodel.CallState
 import com.videochat.ui.viewmodel.CallViewModel
+import org.webrtc.SurfaceViewRenderer
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,6 +38,31 @@ fun CallScreen(
     val isMuted by viewModel.isMuted.collectAsState()
     val isSpeakerOn by viewModel.isSpeakerOn.collectAsState()
     val isCameraOn by viewModel.isCameraOn.collectAsState()
+    
+    LaunchedEffect(callState) {
+        android.util.Log.d("CallScreen", "========== callState changed: $callState ==========")
+        
+        // 记录状态转换
+        when (callState) {
+            is CallState.Calling -> {
+                android.util.Log.d("CallScreen", "State: Calling - should show local preview only")
+            }
+            is CallState.Connecting -> {
+                android.util.Log.d("CallScreen", "State: Connecting - should show small local preview")
+            }
+            is CallState.Connected -> {
+                android.util.Log.d("CallScreen", "State: Connected - should show remote video (top) and local preview (bottom)")
+                android.util.Log.d("CallScreen", "Resetting WebRTC views to clear old SurfaceView references")
+                viewModel.resetViews()
+            }
+            is CallState.Ended -> {
+                android.util.Log.d("CallScreen", "State: Ended - cleaning up")
+            }
+            else -> {}
+        }
+    }
+
+    // SurfaceViewRenderers现在在各个状态中创建，避免重复创建
 
     LaunchedEffect(callId) {
         viewModel.initializeCall(callId, remoteUserId, isVideo, isCaller)
@@ -66,7 +94,12 @@ fun CallScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (isVideo) "视频通话" else "语音通话") }
+                title = { Text(if (isVideo) "视频通话" else "语音通话") },
+                navigationIcon = {
+                    IconButton(onClick = { viewModel.forceEndCall(); onEndCall() }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+                    }
+                }
             )
         }
     ) { padding ->
@@ -91,16 +124,43 @@ fun CallScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(300.dp)
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                                contentAlignment = Alignment.Center
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
                             ) {
-                                Text("本地预览", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                // 使用remember创建SurfaceViewRenderer，避免重复创建
+                                val callingLocalVideoView = remember {
+                                    SurfaceViewRenderer(context).apply {
+                                        // 可以在初始化时进行基本配置
+                                    }
+                                }
+                                
+                                // 当SurfaceViewRenderer可用时，通知ViewModel
+                                LaunchedEffect(callingLocalVideoView) {
+                                    viewModel.startLocalVideo(callingLocalVideoView)
+                                }
+                                
+                                AndroidView(
+                                    factory = { callingLocalVideoView },
+                                    modifier = Modifier.fillMaxSize()
+                                )
                             }
                             Spacer(modifier = Modifier.height(16.dp))
                         }
                         CircularProgressIndicator()
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("等待对方接听...")
+                        Spacer(modifier = Modifier.height(24.dp))
+                        // 取消呼叫按钮
+                        FilledIconButton(
+                            onClick = { viewModel.forceEndCall(); onEndCall() },
+                            modifier = Modifier.size(64.dp),
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Icon(Icons.Default.CallEnd, contentDescription = "取消呼叫", modifier = Modifier.size(32.dp))
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("取消", color = MaterialTheme.colorScheme.error)
                     }
                 }
 
@@ -142,17 +202,48 @@ fun CallScreen(
 
                 is CallState.Connecting -> {
                     Column(
-                        modifier = Modifier.align(Alignment.Center),
+                        modifier = Modifier.fillMaxSize(),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         CircularProgressIndicator()
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("正在连接...")
+                        
+                        // 视频通话时显示本地预览
+                        if (isVideo) {
+                            Spacer(modifier = Modifier.height(24.dp))
+                            Box(
+                                modifier = Modifier
+                                    .width(120.dp)
+                                    .height(160.dp)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                // 使用remember创建SurfaceViewRenderer，避免重复创建
+                                val connectingLocalVideoView = remember {
+                                    SurfaceViewRenderer(context).apply {
+                                        // 可以在初始化时进行基本配置
+                                    }
+                                }
+                                
+                                // 当SurfaceViewRenderer可用时，通知ViewModel
+                                LaunchedEffect(connectingLocalVideoView) {
+                                    viewModel.startLocalVideo(connectingLocalVideoView)
+                                }
+                                
+                                AndroidView(
+                                    factory = { connectingLocalVideoView },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("预览", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
 
                 is CallState.Connected -> {
                     Column(modifier = Modifier.fillMaxSize()) {
+                        // 远程视频 (大屏)
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -161,15 +252,22 @@ fun CallScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             if (isVideo) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(
-                                        Icons.Default.Person, contentDescription = null,
-                                        modifier = Modifier.size(80.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text("对方视频", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                // 使用remember创建SurfaceViewRenderer，避免重复创建
+                                val remoteVideoSurfaceView = remember {
+                                    SurfaceViewRenderer(context).apply {
+                                        // 可以在初始化时进行基本配置
+                                    }
                                 }
+                                
+                                // 当SurfaceViewRenderer可用时，通知ViewModel
+                                LaunchedEffect(remoteVideoSurfaceView) {
+                                    viewModel.setRemoteVideoView(remoteVideoSurfaceView)
+                                }
+                                
+                                AndroidView(
+                                    factory = { remoteVideoSurfaceView },
+                                    modifier = Modifier.fillMaxSize()
+                                )
                             } else {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Icon(
@@ -180,6 +278,36 @@ fun CallScreen(
                                     Spacer(modifier = Modifier.height(16.dp))
                                     Text("通话中...")
                                 }
+                            }
+                        }
+
+                        // 本地视频预览 (小屏)
+                        if (isVideo) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp)
+                                    .padding(8.dp)
+                            ) {
+                                // 使用remember创建SurfaceViewRenderer，避免重复创建
+                                val localVideoView = remember {
+                                    SurfaceViewRenderer(context).apply {
+                                        // 可以在初始化时进行基本配置
+                                    }
+                                }
+                                
+                                // 当SurfaceViewRenderer可用时，通知ViewModel
+                                LaunchedEffect(localVideoView) {
+                                    viewModel.startLocalVideo(localVideoView)
+                                }
+                                
+                                AndroidView(
+                                    factory = { localVideoView },
+                                    modifier = Modifier
+                                        .width(120.dp)
+                                        .height(160.dp)
+                                        .align(Alignment.BottomEnd)
+                                )
                             }
                         }
 
@@ -250,13 +378,13 @@ fun CallScreen(
                                 }
                             }
 
-                            IconButton(
-                                onClick = { viewModel.endCall(); onEndCall() },
-                                modifier = Modifier.size(56.dp),
-                                colors = IconButtonDefaults.iconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.errorContainer
-                                )
-                            ) {
+IconButton(
+    onClick = { viewModel.forceEndCall(); onEndCall() },
+    modifier = Modifier.size(56.dp),
+    colors = IconButtonDefaults.iconButtonColors(
+        containerColor = MaterialTheme.colorScheme.errorContainer
+    )
+) {
                                 Icon(
                                     Icons.Default.CallEnd, contentDescription = "结束",
                                     tint = MaterialTheme.colorScheme.error,
@@ -268,7 +396,10 @@ fun CallScreen(
                 }
 
                 is CallState.Ended -> {
-                    LaunchedEffect(Unit) { onEndCall() }
+                    android.util.Log.d("CallScreen", "CallState.Ended, calling onEndCall")
+                    LaunchedEffect(Unit) {
+                        onEndCall()
+                    }
                 }
 
                 is CallState.Error -> {

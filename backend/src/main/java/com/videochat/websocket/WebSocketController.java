@@ -18,21 +18,29 @@ public class WebSocketController {
     private final SimpMessagingTemplate messagingTemplate;
     private final CallService callService;
     
-    // Call invitation
+// Call invitation
     @MessageMapping("/call/invite")
     public void handleCallInvite(@Payload Map<String, Object> data) {
         Long fromUserId = Long.parseLong(data.get("fromUserId").toString());
         Long toUserId = Long.parseLong(data.get("toUserId").toString());
         Integer callType = Integer.parseInt(data.get("type").toString());
-        
+
         // Create call record
         CallRecord record = callService.createCallRecord(fromUserId, toUserId, callType);
-        
+
         // Send to callee
         messagingTemplate.convertAndSend("/queue/call/" + toUserId, Map.of(
             "type", "call_invite",
             "callId", record.getId(),
             "fromUserId", fromUserId,
+            "callType", callType
+        ));
+
+        // Also send callId back to caller so they can end the call later
+        messagingTemplate.convertAndSend("/queue/call/" + fromUserId, Map.of(
+            "type", "call_invite_confirm",
+            "callId", record.getId(),
+            "toUserId", toUserId,
             "callType", callType
         ));
     }

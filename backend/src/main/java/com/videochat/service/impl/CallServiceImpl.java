@@ -45,7 +45,17 @@ public class CallServiceImpl implements CallService {
     
     @Override
     public void endCall(Long callId) {
+        // Try to find by callId first
         CallRecord record = callRecordMapper.selectById(callId);
+        if (record == null && callId != null && callId > 0) {
+            // If callId is not valid, try to find the most recent active call
+            // This handles the case where caller doesn't know the callId
+            LambdaQueryWrapper<CallRecord> wrapper = new LambdaQueryWrapper<>();
+            wrapper.eq(CallRecord::getStatus, 0) // status 0 = ongoing
+                   .orderByDesc(CallRecord::getCreatedAt)
+                   .last("LIMIT 1");
+            record = callRecordMapper.selectOne(wrapper);
+        }
         if (record != null) {
             record.setStatus(1);
             long seconds = java.time.Duration.between(record.getCreatedAt(), LocalDateTime.now()).getSeconds();
