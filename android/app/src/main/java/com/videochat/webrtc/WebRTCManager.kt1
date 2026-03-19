@@ -1,0 +1,1057 @@
+package com.videochat.webrtc
+
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import org.webrtc.*
+import java.util.concurrent.Executors
+
+/**
+ * WebRTC管理器 - 处理P2P音视频通话
+ * 使用 org.webrtc:google-webrtc 官方库
+ */
+class WebRTCManager(private val context: Context) {
+    
+    // 常量
+    private val TAG = "WebRTCManager"
+    private val STUN_SERVER = "stun:stun.l.google.com:19302"
+    
+    // WebRTC组件
+    private var peerConnectionFactory: PeerConnectionFactory? = null
+    private var peerConnection: PeerConnection? = null
+    private var localAudioTrack: AudioTrack? = null
+    private var localVideoTrack: VideoTrack? = null
+    private var remoteVideoTrack: VideoTrack? = null
+    private var videoCapturer: VideoCapturer? = null
+    private var videoSource: VideoSource? = null
+    private var eglBase: EglBase? = null
+    
+    // 执行器
+    private val executor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    
+    // 回调
+    private var onIceCandidateCallback: ((IceCandidate, String) -> Unit)? = null
+    private var onRemoteStreamCallback: ((MediaStream) -> Unit)? = null
+    private var onIceConnectionStateCallback: ((PeerConnection.IceConnectionState) -> Unit)? = null
+    
+    // 视图 - 使用@Volatile确保跨线程可见性
+    @Volatile
+    private var localSurfaceView: SurfaceViewRenderer? = null
+    @Volatile
+    private var remoteSurfaceView: SurfaceViewRenderer? = null
+    private var pendingRemoteStream: MediaStream? = null
+    
+    // 状态标志
+    private var isRemoteDescriptionSet = false
+    private var pendingCreateAnswerCallback: ((SessionDescription?) -> Unit)? = null
+    
+    /**
+     * 初始化WebRTC管理器
+     */
+    fun initialize(
+        onIceCandidate: (IceCandidate, String) -> Unit,
+        onRemoteStream: (MediaStream) -> Unit,
+        onIceConnectionState: (PeerConnection.IceConnectionState) -> Unit
+    ) {
+        this.onIceCandidateCallback = onIceCandidate
+        this.onRemoteStreamCallback = onRemoteStream
+        this.onIceConnectionStateCallback = onIceConnectionState
+
+        executor.execute {
+            try {
+                // 初始化PeerConnectionFactory
+                val options = PeerConnectionFactory.InitializationOptions.builder(context)
+                    .setEnableInternalTracer(true)
+                    .createInitializationOptions()
+                
+                PeerConnectionFactory.initialize(options)
+                
+                // 创建PeerConnectionFactory
+                val encoderFactory = DefaultVideoEncoderFactory(
+                    eglBase?.eglBaseContext,
+                    true,  // enableIntelVP8Encoder
+                    true   // enableH264HighProfile
+                )
+                val decoderFactory = DefaultVideoDecoderFactory(eglBase?.eglBaseContext)
+                
+                peerConnectionFactory = PeerConnectionFactory.builder()
+                    .setVideoEncoderFactory(encoderFactory)
+                    .setVideoDecoderFactory(decoderFactory)
+                    .createPeerConnectionFactory()
+                    
+                Log.d(TAG, "PeerConnectionFactory initialized")
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize PeerConnectionFactory: ${e.message}", e)
+            }
+        }
+    }
+    
+    /**
+     * 创建PeerConnection
+     */
+    private fun createPeerConnection() {
+        val iceServers = listOf(
+            PeerConnection.IceServer.builder(STUN_SERVER).createIceServer()
+        )
+
+        val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
+            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            // 设置ICE传输策略为all，确保更好的连接性
+            iceTransportsType = PeerConnection.IceTransportsType.ALL
+        }
+
+        val observer = object : PeerConnection.Observer {
+            override fun onIceCandidate(candidate: IceCandidate?) {
+                candidate?.let {
+                    Log.d(TAG, "========== onIceCandidate (local) ==========")
+                    Log.d(TAG, "candidate sdp: ${it.sdp}")
+                    Log.d(TAG, "candidate sdpMid: ${it.sdpMid}, sdpMLineIndex: ${it.sdpMLineIndex}")
+                    Log.d(TAG, "This is a LOCAL ICE candidate that will be sent to remote peer")
+                    onIceCandidateCallback?.invoke(it, it.sdpMid ?: "")
+                }
+            }
+
+            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
+                Log.d(TAG, "========== onIceConnectionChange: $state ==========")
+                onIceConnectionStateCallback?.invoke(state)
+            }
+
+            override fun onSignalingChange(state: PeerConnection.SignalingState) {}
+            override fun onIceConnectionReceivingChange(receiving: Boolean) {}
+            override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) {}
+            override fun onDataChannel(channel: DataChannel?) {}
+            override fun onRenegotiationNeeded() {}
+
+            override fun onAddStream(stream: MediaStream?) {
+                stream?.let {
+                    Log.d(TAG, "========== onAddStream ==========")
+                    Log.d(TAG, "stream id: ${it.id}, videoTracks: ${it.videoTracks.size}, audioTracks: ${it.audioTracks.size}")
+                    
+                    if (it.videoTracks.isEmpty()) {
+                        Log.w(TAG, "WARNING: Received MediaStream has NO video tracks!")
+                        Log.w(TAG, "Remote peer may not have video enabled or SDP has video port 0")
+                    } else {
+                        Log.d(TAG, "SUCCESS: Received MediaStream HAS video tracks")
+                        it.videoTracks.forEachIndexed { index, track ->
+                            Log.d(TAG, "Video track $index: $track, enabled: ${track.enabled()}")
+                        }
+                    }
+                    
+                    // 存储视频轨道（如果有）
+                    if (it.videoTracks.isNotEmpty()) {
+                        val videoTrack = it.videoTracks[0] as VideoTrack
+                        remoteVideoTrack = videoTrack
+                        Log.d(TAG, "Remote video track stored: $remoteVideoTrack")
+                        
+                        // 如果remoteSurfaceView已经准备好，立即添加sink
+                        val surfaceView = remoteSurfaceView
+                        if (surfaceView != null) {
+                            Log.d(TAG, "Remote surface view ready, adding sink immediately from onAddStream")
+                            videoTrack.setEnabled(true)
+                            Log.d(TAG, "Remote video track enabled: ${videoTrack.enabled()}")
+                            Log.d(TAG, "Adding video sink to remote view")
+                            // 安全措施：确保本地视频轨道没有错误地附加到这个SurfaceView
+                            localVideoTrack?.removeSink(surfaceView)
+                            Log.d(TAG, "Ensured local video track not attached to this remote SurfaceView")
+                            videoTrack.addSink(surfaceView)
+                            Log.d(TAG, "Remote video sink added successfully from onAddStream")
+                        } else {
+                            Log.d(TAG, "Remote surface view not ready, video track saved to remoteVideoTrack")
+                        }
+                    } else {
+                        Log.d(TAG, "No video tracks in stream!")
+                    }
+                    
+                    // 启用音频轨道（如果有）
+                    if (it.audioTracks.isNotEmpty()) {
+                        it.audioTracks[0].setEnabled(true)
+                    }
+                    
+                    onRemoteStreamCallback?.invoke(it)
+                }
+            }
+
+            override fun onRemoveStream(stream: MediaStream?) {
+                Log.d(TAG, "onRemoveStream: ${stream?.id}")
+            }
+            
+            override fun onTrack(rtpTransceiver: RtpTransceiver?) {
+                rtpTransceiver?.let { transceiver ->
+                    Log.d(TAG, "========== onTrack ==========")
+                    Log.d(TAG, "transceiver mid: ${transceiver.mid}, mediaType: ${transceiver.mediaType}")
+                    
+                    val receiver = transceiver.receiver
+                    val track = receiver.track()
+                    Log.d(TAG, "track: $track, kind: ${track?.kind()}, enabled: ${track?.enabled()}")
+                    
+                    if (track?.kind() == "video") {
+                        Log.d(TAG, "========== VIDEO TRACK RECEIVED IN onTrack ==========")
+                        Log.d(TAG, "Video track: $track, enabled: ${track.enabled()}")
+                        Log.d(TAG, "transceiver direction: ${transceiver.direction}")
+                        // 处理视频轨道
+                        handleRemoteVideoTrack(track as VideoTrack)
+                    } else if (track?.kind() == "audio") {
+                        Log.d(TAG, "Audio track received in onTrack: $track")
+                        // 启用音频轨道
+                        track.setEnabled(true)
+                    }
+                }
+            }
+            
+            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
+        }
+
+        peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, observer)
+    }
+    
+    /**
+     * 创建本地音视频轨道并开始捕获
+     */
+    fun startCaptureAndAddTracks(isVideo: Boolean) {
+        executor.execute {
+            try {
+                Log.d(TAG, "========== startCaptureAndAddTracks START ==========")
+                Log.d(TAG, "isVideo parameter: $isVideo")
+                Log.d(TAG, "Current state: peerConnectionFactory=${peerConnectionFactory != null}")
+                
+                val factory = peerConnectionFactory ?: return@execute
+
+                // 创建音频源和轨道
+                val audioSource = factory.createAudioSource(MediaConstraints())
+                localAudioTrack = factory.createAudioTrack("audio_track", audioSource)
+
+                        // 添加音频轨道到PeerConnection
+                        localAudioTrack?.let { track ->
+                            Log.d(TAG, "========== Adding audio track to PeerConnection ==========")
+                            val sender = peerConnection?.addTrack(track, listOf("stream"))
+                            Log.d(TAG, "Audio track added to PeerConnection")
+                            // 设置音频传输方向
+                            try {
+                                peerConnection?.transceivers?.find { it.sender == sender }?.direction = RtpTransceiver.RtpTransceiverDirection.SEND_RECV
+                                Log.d(TAG, "Audio transceiver direction set to SEND_RECV")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Could not set audio transceiver direction: ${e.message}")
+                            }
+                        }
+
+                        if (isVideo) {
+                            Log.d(TAG, "========== Setting up video capture ==========")
+                            
+                            // 1. 先创建视频捕获器
+                            Log.d(TAG, "Creating video capturer...")
+                            videoCapturer = createVideoCapturer()
+                            Log.d(TAG, "VideoCapturer created: ${videoCapturer != null}")
+                            if (videoCapturer == null) {
+                                Log.e(TAG, "========== CAMERA INITIALIZATION FAILED ==========")
+                                Log.e(TAG, "This will cause SDP to have video port 0 or no video line")
+                                Log.e(TAG, "Device may not have camera or camera permission not granted")
+                            }
+                    
+                    if (videoCapturer == null) {
+                        Log.e(TAG, "========== CRITICAL: CAMERA INITIALIZATION FAILED ==========")
+                        Log.e(TAG, "Video will be DISABLED for this call")
+                        Log.e(TAG, "Consequences:")
+                        Log.e(TAG, "1. Local video preview will NOT work")
+                        Log.e(TAG, "2. NO video will be sent to remote peer")
+                        Log.e(TAG, "3. Remote peer will see NO video from this device")
+                        Log.e(TAG, "4. SDP will have video port 0 or no video media line")
+                        
+                        // 关键修复：如果摄像头初始化失败，不创建视频轨道，避免SDP中视频端口为0
+                        // 这将导致SDP中视频被正确禁用（无视频媒体行或端口为0）
+                        Log.e(TAG, "Skipping video track creation due to camera initialization failure")
+                        return@execute  // 不继续执行视频轨道创建
+                    } else {
+                        Log.d(TAG, "========== CAMERA INITIALIZATION SUCCESSFUL ==========")
+                        Log.d(TAG, "Video will be ENABLED for this call")
+                        Log.d(TAG, "Consequences:")
+                        Log.d(TAG, "1. Local video preview WILL work")
+                        Log.d(TAG, "2. Video WILL be sent to remote peer")
+                        Log.d(TAG, "3. Remote peer SHOULD see video from this device")
+                        Log.d(TAG, "4. SDP should have video port >0 (e.g., port=9)")
+                        // 2. 创建视频源
+                        videoSource = factory.createVideoSource(false)
+                        Log.d(TAG, "VideoSource created")
+                        
+                        // 创建SurfaceTextureHelper
+                        val surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBase?.eglBaseContext)
+                        if (surfaceTextureHelper == null) {
+                            Log.e(TAG, "Failed to create SurfaceTextureHelper")
+                            return@execute
+                        }
+                        
+                        // 3. 关键修复：先初始化摄像头并开始捕获，再创建视频轨道
+                        Log.d(TAG, "Initializing video capturer with videoSource.capturerObserver")
+                        videoCapturer?.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
+                        videoCapturer?.startCapture(1280, 720, 30)
+                        Log.d(TAG, "Video capture started with correct observer")
+                        
+                        // 4. 创建视频轨道并添加到PeerConnection（必须在摄像头初始化之后）
+                        localVideoTrack = factory.createVideoTrack("video_track", videoSource!!)
+                        Log.d(TAG, "VideoTrack created: ${localVideoTrack != null}")
+                        Log.d(TAG, "Note: Video track created AFTER camera initialization")
+
+                        localVideoTrack?.let { track ->
+                            Log.d(TAG, "========== Adding video track to PeerConnection ==========")
+                            val sender = peerConnection?.addTrack(track, listOf("stream"))
+                            Log.d(TAG, "Video track added to PeerConnection")
+                            // 设置视频传输方向
+                            try {
+                                peerConnection?.transceivers?.find { it.sender == sender }?.direction = RtpTransceiver.RtpTransceiverDirection.SEND_RECV
+                                Log.d(TAG, "Video transceiver direction set to SEND_RECV")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Could not set video transceiver direction: ${e.message}")
+                            }
+                            Log.d(TAG, "SDP should now include video with port >0")
+                        }
+                    }
+                }
+
+                Log.d(TAG, "Local tracks created and added to PeerConnection")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error creating local tracks: ${e.message}", e)
+            }
+        }
+    }
+    
+    private fun createVideoCapturer(): VideoCapturer? {
+        return try {
+            Log.d(TAG, "========== createVideoCapturer START ==========")
+            Log.d(TAG, "This function creates a video capturer for local camera")
+            Log.d(TAG, "If this fails, NO video will be sent to remote peer")
+            
+            val enumerator = Camera1Enumerator(false)
+            val deviceNames = enumerator.deviceNames
+            Log.d(TAG, "Found ${deviceNames.size} camera devices: ${deviceNames.joinToString()}")
+            
+            if (deviceNames.isEmpty()) {
+                Log.e(TAG, "========== CRITICAL: NO CAMERA DEVICES FOUND ==========")
+                Log.e(TAG, "Possible causes:")
+                Log.e(TAG, "1. Camera permission not granted")
+                Log.e(TAG, "2. Device has no physical camera")
+                Log.e(TAG, "3. Camera is in use by another app")
+                Log.e(TAG, "Result: NO video will be sent to remote peer")
+                return null
+            } else {
+                Log.d(TAG, "Camera devices available - proceeding with camera selection")
+            }
+            
+            // 记录每个摄像头的属性
+            deviceNames.forEachIndexed { index, deviceName ->
+                val isFrontFacing = enumerator.isFrontFacing(deviceName)
+                val isBackFacing = enumerator.isBackFacing(deviceName)
+                Log.d(TAG, "Camera device $index: '$deviceName', front-facing: $isFrontFacing, back-facing: $isBackFacing")
+            }
+            
+            // 使用前置摄像头（通常是deviceNames[0]）
+            val deviceName = deviceNames.find { enumerator.isFrontFacing(it) } ?: deviceNames[0]
+            Log.d(TAG, "Selected camera device: '$deviceName'")
+            
+            Log.d(TAG, "Creating camera capturer for device: '$deviceName'")
+            val capturer = enumerator.createCapturer(deviceName, null)
+            
+            if (capturer == null) {
+                Log.e(TAG, "========== CRITICAL: CAMERA CAPTURER CREATION FAILED ==========")
+                Log.e(TAG, "Camera enumerator failed to create capturer for device: '$deviceName'")
+                Log.e(TAG, "Result: NO video will be sent to remote peer")
+            } else {
+                Log.d(TAG, "========== CAMERA CAPTURER CREATED SUCCESSFULLY ==========")
+                Log.d(TAG, "VideoCapturer created: $capturer")
+                Log.d(TAG, "Local video WILL be sent to remote peer")
+            }
+            
+            capturer
+        } catch (e: Exception) {
+            Log.e(TAG, "========== EXCEPTION IN createVideoCapturer ==========")
+            Log.e(TAG, "CameraCapturer not available: ${e.message}", e)
+            Log.e(TAG, "Stack trace for debugging:")
+            e.printStackTrace()
+            Log.e(TAG, "Result: NO video will be sent to remote peer")
+            null
+        }
+    }
+    
+    /**
+     * 设置本地视频视图
+     */
+    fun startLocalVideo(surfaceView: SurfaceViewRenderer) {
+        executor.execute {
+            try {
+                Log.d(TAG, "========== startLocalVideo START ==========")
+                Log.d(TAG, "ROLE: LOCAL VIDEO PREVIEW (should be small window at bottom)")
+                Log.d(TAG, "PURPOSE: Display local camera preview for self-view")
+                Log.d(TAG, "EXPECTED LAYOUT: Small overlay at bottom-right corner")
+                Log.d(TAG, "surfaceView hashCode: ${surfaceView.hashCode()}, current localSurfaceView: ${localSurfaceView?.hashCode()}")
+                
+                // 首先从旧的SurfaceView移除sink（如果存在）
+                val oldSurfaceView = localSurfaceView
+                if (oldSurfaceView != null && oldSurfaceView != surfaceView) {
+                    localVideoTrack?.removeSink(oldSurfaceView)
+                    Log.d(TAG, "Removed local video sink from old SurfaceView (hashCode: ${oldSurfaceView.hashCode()})")
+                    // 同时检查并移除可能错误附加的远程视频轨道
+                    remoteVideoTrack?.removeSink(oldSurfaceView)
+                    Log.d(TAG, "Also removed remote video sink from old local SurfaceView if present")
+                }
+                
+                localSurfaceView = surfaceView
+                Log.d(TAG, "Set localSurfaceView to hashCode: ${surfaceView.hashCode()}")
+                
+                // 安全检查：确保这不是remoteSurfaceView，如果冲突则清除remoteSurfaceView
+                if (surfaceView == remoteSurfaceView) {
+                    Log.w(TAG, "WARNING: surfaceView is also the current remoteSurfaceView! Clearing remoteSurfaceView to avoid confusion.")
+                    remoteSurfaceView = null
+                    // 同时从该SurfaceView移除任何远程视频sink
+                    remoteVideoTrack?.removeSink(surfaceView)
+                    Log.d(TAG, "Cleared remoteSurfaceView and removed remote video sink from this SurfaceView")
+                }
+                
+                // 初始化EGL上下文
+                if (eglBase == null) {
+                    Log.d(TAG, "Creating new EglBase for local video")
+                    eglBase = EglBase.create()
+                    Log.d(TAG, "EglBase created: ${eglBase != null}")
+                } else {
+                    Log.d(TAG, "Using existing EglBase")
+                }
+                
+                val eglContext = eglBase?.eglBaseContext
+                Log.d(TAG, "EGL context for local video: $eglContext")
+                
+                // surfaceView.init()必须在主线程执行
+                mainHandler.post {
+                    try {
+                        surfaceView.init(eglContext, null)
+                        Log.d(TAG, "Local video view initialized on main thread (hashCode: ${surfaceView.hashCode()})")
+                        
+                        // init完成后，在后台线程添加sink
+                         executor.execute {
+                             Log.d(TAG, "Adding local video sink to SurfaceView (hashCode: ${surfaceView.hashCode()})")
+                             Log.d(TAG, "localVideoTrack: $localVideoTrack, enabled: ${localVideoTrack?.enabled()}")
+                             
+                              if (localVideoTrack == null) {
+                                  Log.e(TAG, "========== CRITICAL: localVideoTrack IS NULL ==========")
+                                  Log.e(TAG, "Local video will not be displayed")
+                                  Log.e(TAG, "Possible causes:")
+                                  Log.e(TAG, "1. Camera initialization failed (check createVideoCapturer logs)")
+                                  Log.e(TAG, "2. Video track not created in startCaptureAndAddTracks")
+                                  Log.e(TAG, "3. Video capture not started due to missing permissions")
+                                  Log.e(TAG, "Current state: videoSource=$videoSource, videoCapturer=$videoCapturer")
+                                  Log.e(TAG, "Check SDP logs for video port - should be >0 for video to work")
+                              }
+                             
+                              // 安全措施：确保远程视频轨道没有错误地附加到这个SurfaceView
+                              remoteVideoTrack?.removeSink(surfaceView)
+                              Log.d(TAG, "Ensured remote video track not attached to local SurfaceView")
+                              
+                              // 先移除可能已存在的sink
+                              localVideoTrack?.removeSink(surfaceView)
+                              Log.d(TAG, "Ensured no existing sink on this SurfaceView")
+                              
+                              localVideoTrack?.addSink(surfaceView)
+                              Log.d(TAG, "========== LOCAL VIDEO SINK ADDED ==========")
+                              Log.d(TAG, "Local video sink added to SurfaceView (hashCode: ${surfaceView.hashCode()})")
+                              Log.d(TAG, "Local preview should now display in small window (bottom area)")
+                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error initializing local video view: ${e.message}", e)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error starting local video: ${e.message}", e)
+            }
+        }
+    }
+    
+    /**
+     * 设置远程视频视图
+     */
+    fun setRemoteView(surfaceView: SurfaceViewRenderer) {
+        executor.execute {
+            try {
+                Log.d(TAG, "========== setRemoteView START ==========")
+                Log.d(TAG, "ROLE: REMOTE VIDEO MAIN VIEW (should be large window at top)")
+                Log.d(TAG, "PURPOSE: Display remote peer's video in main/full-screen area")
+                Log.d(TAG, "EXPECTED LAYOUT: Remote video should be at top, local preview at bottom")
+                
+                // 首先从旧的SurfaceView移除sink（如果存在）
+                val oldSurfaceView = remoteSurfaceView
+                if (oldSurfaceView != null && oldSurfaceView != surfaceView) {
+                    // 从pendingRemoteStream移除sink（如果存在）
+                    pendingRemoteStream?.let { stream ->
+                        if (stream.videoTracks.isNotEmpty()) {
+                            stream.videoTracks[0].removeSink(oldSurfaceView)
+                            Log.d(TAG, "Removed remote video sink from pending stream")
+                        }
+                    }
+                    // 从remoteVideoTrack移除sink（如果存在）
+                    remoteVideoTrack?.removeSink(oldSurfaceView)
+                    Log.d(TAG, "Removed remote video sink from old SurfaceView")
+                    // 同时检查并移除可能错误附加的本地视频轨道
+                    localVideoTrack?.removeSink(oldSurfaceView)
+                    Log.d(TAG, "Also removed local video sink from old remote SurfaceView if present")
+                }
+                
+                remoteSurfaceView = surfaceView
+                Log.d(TAG, "Set remoteSurfaceView to hashCode: ${surfaceView.hashCode()}, current localSurfaceView: ${localSurfaceView?.hashCode()}")
+                
+                // 安全检查：确保这不是localSurfaceView，如果冲突则清除localSurfaceView
+                if (surfaceView == localSurfaceView) {
+                    Log.w(TAG, "WARNING: surfaceView is also the current localSurfaceView! Clearing localSurfaceView to avoid confusion.")
+                    localSurfaceView = null
+                    // 同时从该SurfaceView移除任何本地视频sink
+                    localVideoTrack?.removeSink(surfaceView)
+                    Log.d(TAG, "Cleared localSurfaceView and removed local video sink from this SurfaceView")
+                }
+                
+                // 初始化EGL上下文
+                if (eglBase == null) {
+                    Log.d(TAG, "Creating new EglBase for remote video")
+                    eglBase = EglBase.create()
+                    Log.d(TAG, "EglBase created: ${eglBase != null}")
+                } else {
+                    Log.d(TAG, "Using existing EglBase for remote video")
+                }
+                
+                val eglContext = eglBase?.eglBaseContext
+                Log.d(TAG, "EGL context for remote video: $eglContext")
+                
+                // surfaceView.init()必须在主线程执行
+                mainHandler.post {
+                    try {
+                        surfaceView.init(eglContext, null)
+                        Log.d(TAG, "Remote video view initialized on main thread, checking pending stream...")
+                        
+                        // init完成后，在后台线程处理远程视频轨道
+                        executor.execute {
+                            Log.d(TAG, "Setting up remote video view, checking for remote video track...")
+                            
+                             // 检查remoteVideoTrack
+                             remoteVideoTrack?.let { track ->
+                                 Log.d(TAG, "========== REMOTE VIDEO TRACK FOUND ==========")
+                                 Log.d(TAG, "Adding remote video sink to SurfaceView (hashCode: ${surfaceView.hashCode()})")
+                                 Log.d(TAG, "Track ID: ${track.id()}, enabled: ${track.enabled()}")
+                                 track.setEnabled(true)
+                                 Log.d(TAG, "Remote video track enabled: ${track.enabled()}")
+                                 
+                                 // 安全措施：确保本地视频轨道没有错误地附加到这个SurfaceView
+                                 localVideoTrack?.removeSink(surfaceView)
+                                 Log.d(TAG, "Ensured local video track not attached to remote SurfaceView")
+                                 
+                                 // 先移除可能已存在的sink
+                                 track.removeSink(surfaceView)
+                                 Log.d(TAG, "Ensured no existing sink on this SurfaceView")
+                                 
+                                 track.addSink(surfaceView)
+                                 Log.d(TAG, "========== REMOTE VIDEO SINK ADDED SUCCESSFULLY ==========")
+                                 Log.d(TAG, "Remote video should now display in main window (top area)")
+                             } ?: Log.d(TAG, "No remote video track available yet - will be attached when received")
+                            
+                            Log.d(TAG, "Remote video view setup complete")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error initializing remote video view: ${e.message}", e)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting remote view: ${e.message}", e)
+            }
+        }
+    }
+    
+    /**
+     * 处理远程视频轨道
+     */
+    private fun handleRemoteVideoTrack(videoTrack: VideoTrack) {
+        Log.d(TAG, "========== handleRemoteVideoTrack ==========")
+        Log.d(TAG, "This is called when a remote video track is received (via onTrack)")
+        Log.d(TAG, "videoTrack: $videoTrack, enabled: ${videoTrack.enabled()}")
+        Log.d(TAG, "videoTrack.id(): ${videoTrack.id()}")
+        Log.d(TAG, "videoTrack.state(): ${videoTrack.state()}")
+        Log.d(TAG, "current remoteSurfaceView: ${remoteSurfaceView?.hashCode()}")
+        Log.d(TAG, "current remoteVideoTrack (before): $remoteVideoTrack")
+        Log.d(TAG, "current localVideoTrack: $localVideoTrack")
+        
+        // 检查是否是重复的轨道
+        if (remoteVideoTrack == videoTrack) {
+            Log.w(TAG, "WARNING: Received the same video track again (already stored)")
+        }
+        
+        remoteVideoTrack = videoTrack
+        
+        // 如果远程视图已经准备好，立即添加sink
+        val surfaceView = remoteSurfaceView
+        if (surfaceView != null) {
+            Log.d(TAG, "========== REMOTE SURFACE VIEW READY ==========")
+            Log.d(TAG, "Remote surface view ready (hashCode: ${surfaceView.hashCode()}), adding sink for video track")
+            videoTrack.setEnabled(true)
+            Log.d(TAG, "Remote video track enabled: ${videoTrack.enabled()}")
+            
+            // 安全措施：确保本地视频轨道没有错误地附加到这个SurfaceView
+            localVideoTrack?.removeSink(surfaceView)
+            Log.d(TAG, "Ensured local video track not attached to this remote SurfaceView")
+            
+            // 先移除可能已存在的sink（来自之前的轨道）
+            videoTrack.removeSink(surfaceView)
+            Log.d(TAG, "Ensured no existing sink on this SurfaceView")
+            
+            val success = try {
+                videoTrack.addSink(surfaceView)
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to add sink to video track: ${e.message}", e)
+                false
+            }
+            
+            if (success) {
+                Log.d(TAG, "========== REMOTE VIDEO TRACK SINK ADDED SUCCESSFULLY ==========")
+                Log.d(TAG, "Device should now display remote video in main window (top area)")
+                Log.d(TAG, "If video still doesn't display, check:")
+                Log.d(TAG, "1. Remote peer is actually sending video (check their SDP)")
+                Log.d(TAG, "2. Video frames are being received (check EglRenderer logs)")
+                Log.d(TAG, "3. SurfaceView is properly initialized")
+            } else {
+                Log.e(TAG, "========== FAILED TO ADD REMOTE VIDEO SINK ==========")
+                Log.e(TAG, "Remote video will NOT be displayed")
+            }
+        } else {
+            Log.w(TAG, "WARNING: Remote surface view not ready yet")
+            Log.w(TAG, "videoTrack saved to remoteVideoTrack, will be attached when surface view is set")
+            Log.w(TAG, "This is NORMAL if setRemoteView hasn't been called yet")
+        }
+    }
+    
+    /**
+     * 创建Offer
+     */
+    fun createOffer(isVideoCall: Boolean, callback: (SessionDescription?) -> Unit) {
+        executor.execute {
+            try {
+                Log.d(TAG, "========== createOffer START ==========")
+                Log.d(TAG, "isVideoCall=$isVideoCall")
+                
+                // 确保PeerConnection已创建
+                if (peerConnection == null) {
+                    createPeerConnection()
+                }
+                
+                // 添加本地轨道
+                Log.d(TAG, "createOffer: calling startCaptureAndAddTracks with isVideoCall=$isVideoCall")
+                startCaptureAndAddTracks(isVideoCall)
+                
+                val constraints = MediaConstraints().apply {
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", isVideoCall.toString()))
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+                }
+                
+                // 确保所有收发器的方向正确设置
+                peerConnection?.transceivers?.forEach { transceiver ->
+                    if (transceiver.sender?.track() != null) {
+                        transceiver.direction = RtpTransceiver.RtpTransceiverDirection.SEND_RECV
+                    }
+                }
+                
+                peerConnection?.createOffer(object : SdpObserver {
+                    override fun onCreateSuccess(sdp: SessionDescription?) {
+                        Log.d(TAG, "Offer created successfully")
+                        
+                        // 打印SDP内容检查是否包含视频
+                        sdp?.let {
+                            val hasVideo = it.description.contains("video")
+                            Log.d(TAG, "Offer SDP contains video media line: $hasVideo")
+                            
+                            // 分析视频端口
+                            val videoLines = it.description.lines().filter { line -> line.startsWith("m=video") }
+                            if (videoLines.isNotEmpty()) {
+                                val line = videoLines[0]
+                                Log.d(TAG, "Video media line: $line")
+                                val port = line.substringAfter("m=video ").substringBefore(" ").toIntOrNull()
+                                Log.d(TAG, "Video port in SDP: $port (0 means disabled, >0 means enabled)")
+                                
+                                // 检查是否有a=sendonly/recvonly/sendrecv
+                                val videoAttributes = it.description.lines()
+                                    .filter { line -> line.startsWith("a=") && (line.contains("sendonly") || line.contains("recvonly") || line.contains("sendrecv")) }
+                                if (videoAttributes.isNotEmpty()) {
+                                    Log.d(TAG, "Video attributes: ${videoAttributes.joinToString(", ")}")
+                                }
+                            } else {
+                                Log.d(TAG, "========== NO VIDEO MEDIA LINE FOUND IN OFFER SDP ==========")
+                                Log.d(TAG, "This means video is completely disabled in this offer")
+                            }
+                            
+                            // 打印SDP预览
+                            Log.d(TAG, "Offer SDP preview (first 1000 chars): ${it.description.take(1000)}")
+                        }
+                        
+                        // 设置本地描述
+                        sdp?.let {
+                            peerConnection?.setLocalDescription(object : SdpObserver {
+                                override fun onCreateSuccess(p0: SessionDescription?) {}
+                                override fun onSetSuccess() {
+                                    Log.d(TAG, "Local description set (offer) SUCCESS")
+                                    callback(sdp)
+                                }
+                                override fun onCreateFailure(error: String?) {
+                                    Log.e(TAG, "Failed to set local description")
+                                    callback(null)
+                                }
+                                override fun onSetFailure(error: String?) {
+                                    Log.e(TAG, "Failed to set local description")
+                                    callback(null)
+                                }
+                            }, sdp)
+                        } ?: run {
+                            callback(null)
+                        }
+                    }
+                    
+                    override fun onSetSuccess() {}
+                    
+                    override fun onCreateFailure(error: String?) {
+                        Log.e(TAG, "Failed to create offer: $error")
+                        callback(null)
+                    }
+                    
+                    override fun onSetFailure(error: String?) {
+                        Log.e(TAG, "Failed to create offer: $error")
+                        callback(null)
+                    }
+                }, constraints)
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Error creating offer: ${e.message}", e)
+                callback(null)
+            }
+        }
+    }
+    
+    /**
+     * 内部创建Answer的方法
+     */
+    private fun createAnswerInternal(callback: (SessionDescription?) -> Unit) {
+        executor.execute {
+            try {
+                Log.d(TAG, "========== createAnswerInternal START ==========")
+                
+                val constraints = MediaConstraints().apply {
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+                }
+                
+                // 确保所有收发器的方向正确设置
+                peerConnection?.transceivers?.forEach { transceiver ->
+                    if (transceiver.sender?.track() != null) {
+                        transceiver.direction = RtpTransceiver.RtpTransceiverDirection.SEND_RECV
+                    }
+                }
+                
+                Log.d(TAG, "Calling peerConnection.createAnswer...")
+                peerConnection?.createAnswer(object : SdpObserver {
+                    override fun onCreateSuccess(sdp: SessionDescription?) {
+                        Log.d(TAG, "========== createAnswerInternal onCreateSuccess ==========")
+                        // 打印SDP内容检查是否包含视频
+                        sdp?.let {
+                            val hasVideo = it.description.contains("video")
+                            Log.d(TAG, "Answer SDP onCreateSuccess, contains video: $hasVideo")
+                            
+                            // 详细分析视频端口
+                            val videoLines = it.description.lines().filter { line -> line.startsWith("m=video") }
+                            if (videoLines.isNotEmpty()) {
+                                val line = videoLines[0]
+                                Log.d(TAG, "Answer video media line: $line")
+                                val port = line.substringAfter("m=video ").substringBefore(" ").toIntOrNull()
+                                Log.d(TAG, "Answer video port in SDP: $port (0 means disabled, >0 means enabled)")
+                                
+                                // 检查是否有a=sendonly/recvonly/sendrecv
+                                val videoAttributes = it.description.lines()
+                                    .filter { line -> line.startsWith("a=") && (line.contains("sendonly") || line.contains("recvonly") || line.contains("sendrecv")) }
+                                if (videoAttributes.isNotEmpty()) {
+                                    Log.d(TAG, "Answer video attributes: ${videoAttributes.joinToString(", ")}")
+                                }
+                                
+                                // 检查是否有a=rtpmap（编解码器信息）
+                                val rtpmapLines = it.description.lines()
+                                    .filter { line -> line.startsWith("a=rtpmap:") && line.contains("video") }
+                                Log.d(TAG, "Video codec rtpmap lines count: ${rtpmapLines.size}")
+                            } else {
+                                Log.d(TAG, "========== NO VIDEO MEDIA LINE FOUND IN ANSWER SDP ==========")
+                                Log.d(TAG, "This means video is completely disabled in this answer")
+                            }
+                            
+                            // 打印SDP预览
+                            Log.d(TAG, "Answer SDP preview (first 1000 chars): ${it.description.take(1000)}")
+                        } ?: Log.d(TAG, "Answer SDP is null!")
+                        
+                        sdp?.let {
+                            Log.d(TAG, "Calling setLocalDescription...")
+                            peerConnection?.setLocalDescription(object : SdpObserver {
+                                override fun onCreateSuccess(p0: SessionDescription?) {}
+                                override fun onSetSuccess() {
+                                    Log.d(TAG, "Local description set (answer) SUCCESS")
+                                    callback(sdp)
+                                }
+                                override fun onCreateFailure(error: String?) {
+                                    Log.e(TAG, "onSetFailure: onCreateFailure called")
+                                    callback(null)
+                                }
+                                override fun onSetFailure(error: String?) {
+                                    Log.e(TAG, "Failed to set local description: $error")
+                                    callback(null)
+                                }
+                            }, sdp)
+                        } ?: run {
+                            Log.d(TAG, "SDP is null, callback with null")
+                            callback(null)
+                        }
+                    }
+                    
+                    override fun onSetSuccess() {
+                        Log.d(TAG, "createAnswerInternal onSetSuccess")
+                    }
+                    
+                    override fun onCreateFailure(error: String?) {
+                        Log.e(TAG, "Failed to create answer: $error")
+                        callback(null)
+                    }
+                    
+                    override fun onSetFailure(error: String?) {
+                        Log.e(TAG, "onSetFailure called in createAnswer: $error")
+                        callback(null)
+                    }
+                }, constraints)
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception in createAnswer: ${e.message}", e)
+                callback(null)
+            }
+        }
+    }
+    
+    /**
+     * 创建Answer
+     */
+    fun createAnswer(isVideoCall: Boolean, callback: (SessionDescription?) -> Unit) {
+        executor.execute {
+            if (isRemoteDescriptionSet) {
+                Log.d(TAG, "Remote description already set, creating answer directly")
+                createAnswerInternal(callback)
+            } else {
+                Log.d(TAG, "Remote description not set yet, queuing answer creation")
+                pendingCreateAnswerCallback = callback
+            }
+        }
+    }
+    
+    /**
+     * 设置远程描述
+     */
+    fun setRemoteDescription(sdp: String, type: String, callback: (Boolean) -> Unit) {
+        executor.execute {
+            try {
+                Log.d(TAG, "========== setRemoteDescription START ==========")
+                Log.d(TAG, "type=$type, sdp length=${sdp.length}")
+                
+                // 确保PeerConnection已创建
+                if (peerConnection == null) {
+                    createPeerConnection()
+                }
+                
+                // 详细分析远程SDP
+                Log.d(TAG, "========== ANALYZING REMOTE SDP ==========")
+                Log.d(TAG, "SDP type: $type")
+                
+                // 检查是否有视频媒体行
+                val hasVideo = sdp.contains("m=video")
+                Log.d(TAG, "Remote SDP contains video media line: $hasVideo")
+                
+                if (hasVideo) {
+                    val videoLines = sdp.lines().filter { line -> line.startsWith("m=video") }
+                    if (videoLines.isNotEmpty()) {
+                        val line = videoLines[0]
+                        Log.d(TAG, "Remote video media line: $line")
+                        val port = line.substringAfter("m=video ").substringBefore(" ").toIntOrNull()
+                        Log.d(TAG, "Remote video port in SDP: $port (0 means disabled, >0 means enabled)")
+                        
+                        if (port == 0) {
+                            Log.e(TAG, "========== CRITICAL: REMOTE SDP HAS VIDEO PORT 0 ==========")
+                            Log.e(TAG, "Remote peer is NOT sending video! This is why remote video doesn't display")
+                            Log.e(TAG, "Check remote peer's camera initialization and video track creation")
+                        } else if (port != null && port > 0) {
+                            Log.d(TAG, "Remote peer IS sending video (port=$port)")
+                            Log.d(TAG, "We should receive onAddStream or onTrack with video tracks")
+                        }
+                        
+                        // 检查方向属性
+                        val directionLines = sdp.lines().filter { line -> 
+                            line.startsWith("a=") && (line.contains("sendonly") || line.contains("recvonly") || line.contains("sendrecv") || line.contains("inactive"))
+                        }
+                        if (directionLines.isNotEmpty()) {
+                            Log.d(TAG, "SDP direction attributes: ${directionLines.joinToString(", ")}")
+                        }
+                    } else {
+                        Log.w(TAG, "No m=video line found despite 'contains video' check")
+                    }
+                } else {
+                    Log.w(TAG, "Remote SDP has NO video media line - remote peer not sending video")
+                }
+                
+                // 打印SDP预览
+                Log.d(TAG, "Remote SDP preview (first 1200 chars): ${sdp.take(1200)}")
+                
+                val sessionDescription = SessionDescription(SessionDescription.Type.fromCanonicalForm(type), sdp)
+                
+                peerConnection?.setRemoteDescription(object : SdpObserver {
+                    override fun onCreateSuccess(p0: SessionDescription?) {}
+                    override fun onSetSuccess() {
+                        Log.d(TAG, "Remote description set successfully")
+                        isRemoteDescriptionSet = true
+                        
+                        // 如果有等待中的Answer创建回调，执行它
+                        pendingCreateAnswerCallback?.let { answerCallback ->
+                            Log.d(TAG, "Executing pending createAnswer callback")
+                            createAnswerInternal(answerCallback)
+                            pendingCreateAnswerCallback = null
+                        }
+                        
+                        callback(true)
+                    }
+                    override fun onCreateFailure(p0: String?) {}
+                    override fun onSetFailure(error: String?) {
+                        Log.e(TAG, "Failed to set remote description: $error")
+                        callback(false)
+                    }
+                }, sessionDescription)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting remote description: ${e.message}")
+                callback(false)
+            }
+        }
+    }
+    
+    /**
+     * 添加ICE Candidate
+     */
+    fun addIceCandidate(candidate: String, sdpMid: String?, sdpMLineIndex: Int) {
+        executor.execute {
+            try {
+                Log.d(TAG, "========== addIceCandidate (remote) ==========")
+                Log.d(TAG, "candidate: $candidate, sdpMid: $sdpMid, sdpMLineIndex: $sdpMLineIndex")
+                val iceCandidate = IceCandidate(sdpMid, sdpMLineIndex, candidate)
+                peerConnection?.addIceCandidate(iceCandidate)
+                Log.d(TAG, "ICE candidate added successfully")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error adding ICE candidate: ${e.message}")
+            }
+        }
+    }
+    
+    /**
+     * 获取本地SDP描述
+     */
+    fun getLocalDescription(): String? = peerConnection?.localDescription?.description
+    
+    /**
+     * 设置音频启用/禁用
+     */
+    fun setAudioEnabled(enabled: Boolean) {
+        localAudioTrack?.setEnabled(enabled)
+    }
+    
+    /**
+     * 设置视频启用/禁用
+     */
+    fun setVideoEnabled(enabled: Boolean) {
+        localVideoTrack?.setEnabled(enabled)
+        if (!enabled) {
+            try {
+                videoCapturer?.stopCapture()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping capture: ${e.message}")
+            }
+        } else {
+            try {
+                videoCapturer?.startCapture(1280, 720, 30)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error starting capture: ${e.message}")
+            }
+        }
+    }
+    
+    /**
+     * 切换前后摄像头
+     */
+    fun switchCamera() {
+        try {
+            (videoCapturer as? Camera2Capturer)?.switchCamera(null)
+        } catch (e: Exception) {
+            Log.e(TAG, "Switch camera error: ${e.message}")
+        }
+    }
+    
+    /**
+     * 重置视图引用（不释放WebRTC连接）
+     * 用于状态切换时清理旧的SurfaceView引用
+     */
+    fun resetViews() {
+        executor.execute {
+            Log.d(TAG, "========== resetViews ==========")
+            
+            // 从当前SurfaceView移除sink
+            localVideoTrack?.removeSink(localSurfaceView)
+            remoteVideoTrack?.removeSink(remoteSurfaceView)
+            
+            // 重置SurfaceView引用但不释放它们（由UI层管理生命周期）
+            localSurfaceView = null
+            remoteSurfaceView = null
+            
+            Log.d(TAG, "Views reset completed")
+        }
+    }
+    
+    /**
+     * 释放资源
+     */
+    fun release() {
+        executor.execute {
+            try {
+                videoCapturer?.stopCapture()
+                videoCapturer = null
+                
+                localVideoTrack?.removeSink(localSurfaceView)
+                localSurfaceView?.release()
+                localSurfaceView = null
+                
+                remoteSurfaceView?.release()
+                remoteSurfaceView = null
+                
+                peerConnection?.close()
+                peerConnection = null
+                
+                peerConnectionFactory?.dispose()
+                peerConnectionFactory = null
+                
+                eglBase?.release()
+                eglBase = null
+                
+                localAudioTrack?.setEnabled(false)
+                localAudioTrack = null
+                localVideoTrack?.setEnabled(false)
+                localVideoTrack = null
+                
+                remoteVideoTrack?.setEnabled(false)
+                remoteVideoTrack?.removeSink(remoteSurfaceView)
+                remoteVideoTrack = null
+                
+                pendingRemoteStream = null
+                isRemoteDescriptionSet = false
+                pendingCreateAnswerCallback = null
+                
+                Log.d(TAG, "WebRTC released")
+            } catch (e: Exception) {
+                Log.e(TAG, "Release error: ${e.message}")
+            }
+        }
+    }
+}
