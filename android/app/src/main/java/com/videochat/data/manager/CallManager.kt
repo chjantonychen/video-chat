@@ -28,6 +28,9 @@ class CallManager private constructor(private val application: Application) {
     private var pendingCallIsVideo: Boolean = false
     // 标记是否正在通话中（防止挂断后再次触发）
     private var isInCall: Boolean = false
+    
+    // 【新增】标记是否应该忽略来电（当CallScreen打开时）
+    private var shouldIgnoreIncoming: Boolean = false
 
     // 回调接口
     var callListener: CallListener? = null
@@ -48,10 +51,20 @@ class CallManager private constructor(private val application: Application) {
         pendingCallToUserId = null
         pendingCallIsVideo = false
         isInCall = false
+        shouldIgnoreIncoming = false  // 重置忽略标志
     }
 
     fun setInCall(inCall: Boolean) {
         isInCall = inCall
+    }
+    
+    // 【新增】设置忽略来电标志，当CallScreen打开时调用
+    fun setIgnoreIncoming(ignore: Boolean) {
+        shouldIgnoreIncoming = ignore
+        if (ignore) {
+            isInCall = true
+        }
+        Log.d(TAG, "setIgnoreIncoming: $ignore")
     }
 
     fun connect(token: String, userId: Long) {
@@ -80,6 +93,14 @@ class CallManager private constructor(private val application: Application) {
             override fun onCallInvite(signal: CallSignal.CallInvite) {
                 Log.d(TAG, "========== CallManager onCallInvite ==========")
                 Log.d(TAG, "callId=${signal.callId}, from=${signal.fromUserId}, type=${signal.callType}")
+                Log.d(TAG, "isInCall=$isInCall, shouldIgnoreIncoming=$shouldIgnoreIncoming")
+                
+                // 【关键修复】如果当前在通话中或应该忽略来电，忽略call_invite消息
+                if (isInCall || shouldIgnoreIncoming) {
+                    Log.d(TAG, "Ignoring call_invite - isInCall=$isInCall, shouldIgnoreIncoming=$shouldIgnoreIncoming")
+                    return
+                }
+                
                 callListener?.onIncomingCall(
                     signal.callId,
                     signal.fromUserId,

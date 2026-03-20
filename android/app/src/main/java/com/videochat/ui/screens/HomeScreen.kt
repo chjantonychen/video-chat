@@ -19,6 +19,8 @@ import com.videochat.data.manager.CallManager
 import com.videochat.data.model.FriendRequest
 import com.videochat.data.model.User
 import com.videochat.data.repository.FriendRepository
+import com.videochat.ui.viewmodel.CallState
+import com.videochat.ui.viewmodel.CallViewModel
 import kotlinx.coroutines.launch
 
 data class FriendItem(
@@ -44,8 +46,15 @@ fun HomeScreen(
     var friends by remember { mutableStateOf<List<User>>(emptyList()) }
     var friendRequests by remember { mutableStateOf<List<FriendRequest>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    
+    // 获取CallViewModel单例，监听通话状态
+    val callViewModel = remember { 
+        CallViewModel.getInstance(context.applicationContext as android.app.Application) 
+    }
+    val callState by callViewModel.callState.collectAsState()
+    val hasActiveCall = callState is CallState.Calling || callState is CallState.Ringing || 
+                        callState is CallState.Connecting || callState is CallState.Connected
 
     // 初始化CallManager来接收来电通知
     LaunchedEffect(Unit) {
@@ -65,16 +74,16 @@ fun HomeScreen(
                     val isVideo = callType == 2
                     onNavigateToCall(callId, isVideo, false, fromUserId)
                 }
-
+                
                 override fun onCallResponse(callId: Long, accept: Boolean, toUserId: Long?) {
                     android.util.Log.d("HomeScreen", "========== onCallResponse ==========")
                     android.util.Log.d("HomeScreen", "callId=$callId, accept=$accept, toUserId=$toUserId")
-                    // 【修复】主叫收到对方接受响应时，不在这里处理
-                    // 通话逻辑由CallScreen的CallViewModel处理
-                    // HomeScreen不应该响应call_response，否则会导致挂断后再次发起通话
-                    android.util.Log.d("HomeScreen", "Call response ignored in HomeScreen - CallScreen handles it")
+                    // 主叫收到对方接受响应，跳转到通话界面
+                    if (accept && toUserId != null) {
+                        onNavigateToCall(0, true, true, toUserId)
+                    }
                 }
-
+                
                 override fun onCallEnded(callId: Long) {
                     android.util.Log.d("HomeScreen", "========== onCallEnded ==========")
                     android.util.Log.d("HomeScreen", "callId=$callId")
@@ -90,47 +99,17 @@ fun HomeScreen(
     }
 
     LaunchedEffect(selectedTab) {
-        errorMessage = null
         if (selectedTab == 0) {
             isLoading = true
-            try {
-                friendRepository.getFriendList()
-                    .onSuccess { list ->
-                        Log.d("HomeScreen", "Friend list loaded: ${list.size} items")
-                        friends = list
-                    }
-                    .onFailure { e ->
-                        Log.e("HomeScreen", "Failed to load friend list", e)
-                        errorMessage = "加载好友列表失败: ${e.message}"
-                    }
-            } catch (e: Exception) {
-                Log.e("HomeScreen", "Exception loading friend list", e)
-                errorMessage = "加载好友列表异常: ${e.message}"
-            }
+            friendRepository.getFriendList().onSuccess { friends = it }
             isLoading = false
         } else if (selectedTab == 1) {
             isLoading = true
-            try {
-                friendRepository.getFriendRequests()
-                    .onSuccess { list ->
-                        Log.d("HomeScreen", "Friend requests loaded: ${list.size} items")
-                        list.forEach { req ->
-                            Log.d("HomeScreen", "Request: id=${req.id}, fromUserId=${req.fromUserId}, fromUsername=${req.fromUsername}, fromNickname=${req.fromNickname}")
-                        }
-                        friendRequests = list
-                    }
-                    .onFailure { e ->
-                        Log.e("HomeScreen", "Failed to load friend requests", e)
-                        errorMessage = "加载好友请求失败: ${e.message}"
-                    }
-            } catch (e: Exception) {
-                Log.e("HomeScreen", "Exception loading friend requests", e)
-                errorMessage = "加载好友请求异常: ${e.message}"
-            }
+            friendRepository.getFriendRequests().onSuccess { friendRequests = it }
             isLoading = false
         }
     }
-
+    
     Scaffold(
         topBar = {
             TopAppBar(
@@ -141,37 +120,29 @@ fun HomeScreen(
                     }
                 }
             )
-        },
-        floatingActionButton = {
-            FloatingActionButton(onClick = { showAddFriendDialog = true }) {
-                Icon(Icons.Default.PersonAdd, contentDescription = "添加好友")
-            }
+},
+    floatingActionButton = {
+        // 没有通话时显示"添加好友"按钮
+        FloatingActionButton(onClick = { showAddFriendDialog = true }) {
+            Icon(Icons.Default.PersonAdd, contentDescription = "添加好友")
         }
+}
     ) { padding ->
         Column(modifier = Modifier.padding(padding)) {
-            TabRow(selectedTabIndex = selectedTab) {
-                Tab(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    text = { Text("好友") }
-                )
-                Tab(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    text = { Text("请求") }
-                )
-            }
+        TabRow(selectedTabIndex = selectedTab) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("好友") }
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("请求") }
+            )
+        }
 
-            // 显示错误消息
-            errorMessage?.let { error ->
-                Text(
-                    text = error,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(16.dp)
-                )
-            }
-
-            when (selectedTab) {
+        when (selectedTab) {
                 0 -> {
                     if (isLoading) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -188,17 +159,17 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             items(friends) { friend ->
-                                FriendListItem(
-                                    friend = FriendItem(
-                                        id = friend.id,
-                                        username = friend.username,
-                                        nickname = friend.nickname ?: friend.username,
-                                        avatar = friend.avatar
-                                    ),
-                                    onClick = { onNavigateToChat(friend.id, false) },
-                                    onVideoCall = { onNavigateToCall(0, true, true, friend.id) },
-                                    onVoiceCall = { onNavigateToCall(0, false, true, friend.id) }
-                                )
+FriendListItem(
+    friend = FriendItem(
+        id = friend.id,
+        username = friend.username,
+        nickname = friend.nickname ?: friend.username,
+        avatar = friend.avatar
+    ),
+    onClick = { onNavigateToChat(friend.id, false) },
+    onVideoCall = { onNavigateToChat(friend.id, true) },
+    onVoiceCall = { onNavigateToChat(friend.id, false) }
+)
                             }
                         }
                     }
@@ -224,25 +195,13 @@ fun HomeScreen(
                                     onAccept = {
                                         scope.launch {
                                             friendRepository.acceptFriendRequest(request.id)
-                                                .onSuccess {
-                                                    friendRequests = friendRequests.filter { it.id != request.id }
-                                                }
-                                                .onFailure { e ->
-                                                    Log.e("HomeScreen", "Accept failed", e)
-                                                    errorMessage = "接受请求失败: ${e.message}"
-                                                }
+                                            friendRequests = friendRequests.filter { it.id != request.id }
                                         }
                                     },
                                     onReject = {
                                         scope.launch {
                                             friendRepository.rejectFriendRequest(request.id)
-                                                .onSuccess {
-                                                    friendRequests = friendRequests.filter { it.id != request.id }
-                                                }
-                                                .onFailure { e ->
-                                                    Log.e("HomeScreen", "Reject failed", e)
-                                                    errorMessage = "拒绝请求失败: ${e.message}"
-                                                }
+                                            friendRequests = friendRequests.filter { it.id != request.id }
                                         }
                                     }
                                 )
@@ -253,7 +212,7 @@ fun HomeScreen(
             }
         }
     }
-
+    
     if (showAddFriendDialog) {
         AddFriendDialog(
             friendRepository = friendRepository,
@@ -293,21 +252,21 @@ fun FriendListItem(
                     )
                 }
             }
-
+            
             Spacer(modifier = Modifier.width(16.dp))
-
+            
             Column(modifier = Modifier.weight(1f)) {
                 Text(friend.nickname, style = MaterialTheme.typography.titleMedium)
                 Text(friend.username, style = MaterialTheme.typography.bodySmall)
             }
+            
+IconButton(onClick = { Log.d("HomeScreen", "Voice call button clicked for ${friend.username}"); onVoiceCall() }) {
+    Icon(Icons.Default.Call, contentDescription = "Voice Call")
+}
 
-            IconButton(onClick = { Log.d("HomeScreen", "Voice call button clicked for ${friend.username}"); onVoiceCall() }) {
-                Icon(Icons.Default.Call, contentDescription = "Voice Call")
-            }
-
-            IconButton(onClick = { Log.d("HomeScreen", "Video call button clicked for ${friend.username}"); onVideoCall() }) {
-                Icon(Icons.Default.Videocam, contentDescription = "Video Call")
-            }
+IconButton(onClick = { Log.d("HomeScreen", "Video call button clicked for ${friend.username}"); onVideoCall() }) {
+    Icon(Icons.Default.Videocam, contentDescription = "Video Call")
+}
         }
     }
 }
@@ -328,10 +287,8 @@ fun FriendRequestItem(
             CircleAvatar()
             Spacer(modifier = Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f)) {
-                // 添加null安全处理
-                val displayName = if (request.fromNickname.isNullOrBlank()) request.fromUsername else request.fromNickname
-                Text(displayName ?: "未知用户", style = MaterialTheme.typography.titleMedium)
-                Text(request.fromUsername ?: "", style = MaterialTheme.typography.bodySmall)
+                Text(request.fromNickname ?: request.fromUsername, style = MaterialTheme.typography.titleMedium)
+                Text(request.fromUsername, style = MaterialTheme.typography.bodySmall)
             }
             IconButton(onClick = onAccept) {
                 Icon(Icons.Default.Check, contentDescription = "Accept", tint = MaterialTheme.colorScheme.primary)
@@ -367,7 +324,7 @@ fun AddFriendDialog(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var requestSent by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-
+    
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("添加好友") },
@@ -376,7 +333,7 @@ fun AddFriendDialog(
                 if (!requestSent) {
                     OutlinedTextField(
                         value = username,
-                        onValueChange = {
+                        onValueChange = { 
                             username = it
                             searchResult = null
                             errorMessage = null
@@ -385,9 +342,9 @@ fun AddFriendDialog(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-
+                    
                     Spacer(modifier = Modifier.height(8.dp))
-
+                    
                     Button(
                         onClick = {
                             scope.launch {
@@ -413,12 +370,12 @@ fun AddFriendDialog(
                             Text("搜索")
                         }
                     }
-
+                    
                     errorMessage?.let {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
-
+                    
                     searchResult?.let { user ->
                         Spacer(modifier = Modifier.height(16.dp))
                         Card(modifier = Modifier.fillMaxWidth()) {

@@ -48,6 +48,24 @@ data class ChatMessage(
     val type: Int = MESSAGE_TYPE_TEXT
 )
 
+// 【关键修复】使用对象来保存通话状态，这样可以在Activity重建和Compose重组时保持状态
+object ChatScreenCallState {
+    val hasAutoStartedForFriend = mutableMapOf<Long, Boolean>()
+    
+    fun markCallStarted(friendId: Long) {
+        hasAutoStartedForFriend[friendId] = true
+        android.util.Log.d("ChatScreen", "Marked call started for friendId=$friendId")
+    }
+    
+    fun hasStartedCall(friendId: Long): Boolean {
+        return hasAutoStartedForFriend[friendId] ?: false
+    }
+    
+    fun reset(friendId: Long) {
+        hasAutoStartedForFriend.remove(friendId)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
@@ -72,6 +90,11 @@ fun ChatScreen(
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    
+    // 【关键修复】使用静态状态对象来保存通话标志，防止Compose重组时丢失
+    var hasAutoStartedCall by remember { 
+        mutableStateOf(ChatScreenCallState.hasStartedCall(friendId)) 
+    }
 
     // Image picker
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -158,15 +181,6 @@ messageRepository.uploadFile(tempFile).onSuccess { url ->
         currentUserId = userId
         currentUsername = username ?: ""
 
-        // Auto-start call if triggered from video/voice call button
-        if (isVideoCall && userId != null) {
-            android.util.Log.d("ChatScreen", "========== Auto-starting video call ==========")
-            android.util.Log.d("ChatScreen", "friendId=$friendId, userId=$userId")
-            // 延迟一点时间再导航，让当前Composition完成
-            kotlinx.coroutines.delay(100)
-            onStartCall(true)
-        }
-
         // Then load messages with currentUserId available
         if (userId != null) {
             Log.d("ChatScreen", "Loading messages for userId=$userId")
@@ -201,6 +215,35 @@ messageRepository.uploadFile(tempFile).onSuccess { url ->
             }
         } else {
             Log.w("ChatScreen", "userId is null, not loading messages")
+        }
+    }
+    
+    // 【关键修复】使用独立的 LaunchedEffect(Unit) 确保只自动发起一次通话
+    LaunchedEffect(Unit) {
+        if (isVideoCall && !hasAutoStartedCall) {
+            // 等待 userId 加载
+            var userId = preferencesManager.getUserIdSync()
+            if (userId == null) {
+                try {
+                    val userResponse = RetrofitClient.apiService.getMe()
+                    if (userResponse.isSuccessful) {
+                        userId = userResponse.body()?.id
+                    }
+                } catch (e: Exception) {
+                    Log.e("ChatScreen", "Failed to fetch user", e)
+                }
+            }
+            
+            if (userId != null) {
+                hasAutoStartedCall = true
+                // 【关键修复】使用静态对象保存状态，防止Compose重组时丢失
+                ChatScreenCallState.markCallStarted(friendId)
+                android.util.Log.d("ChatScreen", "========== Auto-starting video call (once) ==========")
+                android.util.Log.d("ChatScreen", "friendId=$friendId, userId=$userId")
+                // 延迟一点时间再导航，让当前Composition完成
+                delay(100)
+                onStartCall(true)
+            }
         }
     }
 

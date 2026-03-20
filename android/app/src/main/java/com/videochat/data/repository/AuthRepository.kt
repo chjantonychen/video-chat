@@ -10,6 +10,11 @@ class AuthRepository(private val preferencesManager: PreferencesManager) {
     
     private val api = RetrofitClient.apiService
     
+    // 同步检查：只检查token是否存在（不进行网络验证）
+    fun isLoggedInSync(): Boolean {
+        return preferencesManager.getTokenBlocking() != null
+    }
+    
     // Decode user ID from JWT token
     private fun decodeUserIdFromToken(token: String): Long? {
         return try {
@@ -90,8 +95,10 @@ class AuthRepository(private val preferencesManager: PreferencesManager) {
     }
     
     suspend fun logout() {
+        android.util.Log.d("AuthRepository", "logout: clearing preferences")
         preferencesManager.clear()
         RetrofitClient.setToken(null)
+        android.util.Log.d("AuthRepository", "logout: done")
     }
     
     suspend fun isLoggedIn(): Boolean {

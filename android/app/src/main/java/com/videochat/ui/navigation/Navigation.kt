@@ -1,6 +1,7 @@
 package com.videochat.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -11,6 +12,7 @@ import com.videochat.data.repository.AuthRepository
 import com.videochat.data.repository.FriendRepository
 import com.videochat.data.repository.MessageRepository
 import com.videochat.ui.screens.*
+import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String) {
     object Login : Screen("login")
@@ -33,6 +35,8 @@ fun AppNavigation(
     messageRepository: MessageRepository,
     preferencesManager: PreferencesManager
 ) {
+    val scope = rememberCoroutineScope()
+    
     NavHost(
         navController = navController,
         startDestination = if (isLoggedIn) Screen.Home.route else Screen.Login.route
@@ -70,8 +74,12 @@ fun AppNavigation(
                     navController.navigate(Screen.Call.createRoute(callId, isVideo, isCaller, remoteUserId))
                 },
                 onLogout = {
-                    navController.navigate(Screen.Login.route) {
-                        popUpTo(0) { inclusive = true }
+                    // 清除token后再导航
+                    scope.launch {
+                        authRepository.logout()
+                        navController.navigate(Screen.Login.route) {
+                            popUpTo(0) { inclusive = true }
+                        }
                     }
                 },
                 friendRepository = friendRepository,
@@ -88,11 +96,24 @@ fun AppNavigation(
         ) { backStackEntry ->
             val friendId = backStackEntry.arguments?.getLong("friendId") ?: 0L
             val isVideoCall = backStackEntry.arguments?.getBoolean("isVideoCall") ?: false
+            
+            // 【关键修复】使用 rememberInBackStack 来跟踪是否已经发起过通话
+            // 当从 CallScreen 返回时，isVideoCall 应该被忽略，防止重复发起
+            androidx.compose.runtime.remember(isVideoCall) {
+                android.util.Log.d("Navigation", "ChatScreen composed with isVideoCall=$isVideoCall")
+            }
+            
             ChatScreen(
                 friendId = friendId,
                 isVideoCall = isVideoCall,
                 onNavigateBack = { navController.popBackStack() },
                 onStartCall = { isVideo ->
+                    // 【关键修复】发起新通话前重置CallViewModel状态
+                    val app = navController.context.applicationContext as android.app.Application
+                    val callViewModel = com.videochat.ui.viewmodel.CallViewModel.getInstance(app)
+                    callViewModel.resetState()
+                    android.util.Log.d("Navigation", "Reset CallViewModel state before starting new call")
+                    
                     navController.navigate(Screen.Call.createRoute(0, isVideo, true, friendId))
                 },
                 messageRepository = messageRepository,

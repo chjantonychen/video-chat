@@ -17,9 +17,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.videochat.ui.viewmodel.CallState
 import com.videochat.ui.viewmodel.CallViewModel
+import com.videochat.data.manager.CallManager
 import kotlinx.coroutines.delay
 import org.webrtc.SurfaceViewRenderer
 
@@ -30,15 +30,35 @@ fun CallScreen(
     isVideo: Boolean,
     isCaller: Boolean,
     remoteUserId: Long,
-    onEndCall: () -> Unit,
-    viewModel: CallViewModel = viewModel()
+    onEndCall: () -> Unit
 ) {
     val context = LocalContext.current
+    // 使用单例获取CallViewModel，这样返回HomeScreen后还能继续访问
+    val viewModel = remember { 
+        com.videochat.ui.viewmodel.CallViewModel.getInstance(context.applicationContext as android.app.Application) 
+    }
     var hasPermissions by remember { mutableStateOf(false) }
     val callState by viewModel.callState.collectAsState()
     val isMuted by viewModel.isMuted.collectAsState()
     val isSpeakerOn by viewModel.isSpeakerOn.collectAsState()
     val isCameraOn by viewModel.isCameraOn.collectAsState()
+
+    // 【关键修复】在CallScreen打开时，通知CallManager忽略来电，防止重复触发
+    DisposableEffect(Unit) {
+        android.util.Log.d("CallScreen", "CallScreen opened - setting CallManager to ignore incoming calls")
+        val callManager = CallManager.getInstance(context.applicationContext as android.app.Application)
+        callManager.setIgnoreIncoming(true)
+        
+        onDispose {
+            android.util.Log.d("CallScreen", "CallScreen closed - resetting CallManager ignore flag")
+            // CallScreen关闭时，重置忽略标志
+            // 注意：如果是正常结束通话（forceEndCall），CallViewModel会清理状态
+            // 这里只处理用户返回HomeScreen的情况
+            callManager.setIgnoreIncoming(false)
+        }
+    }
+
+    // 通话状态变化时检查是否需要返回
     
     LaunchedEffect(callState) {
         android.util.Log.d("CallScreen", "========== callState changed: $callState ==========")
@@ -66,9 +86,45 @@ fun CallScreen(
     // SurfaceViewRenderers现在在各个状态中创建，避免重复创建
 
     LaunchedEffect(callId) {
-        viewModel.initializeCall(callId, remoteUserId, isVideo, isCaller)
+        // 检查是否已经有通话在进行中，如果是则不重新初始化
+        val currentState = viewModel.callState.value
+        val isActiveCall = currentState is CallState.Calling || 
+                           currentState is CallState.Ringing || 
+                           currentState is CallState.Connecting || 
+                           currentState is CallState.Connected
+        
+        android.util.Log.d("CallScreen", "LaunchedEffect(callId): callId=$callId, isCaller=$isCaller, currentState=$currentState, isActiveCall=$isActiveCall")
+        
+        // 【关键修复】处理不同情况：
+        // 1. 如果是被叫（来电）且状态不是活跃通话，先重置状态再初始化
+        // 2. 如果是主叫且状态是Idle，正常初始化
+        // 3. 如果状态是活跃通话，跳过
+        if (isActiveCall) {
+            android.util.Log.d("CallScreen", "Call already in progress, skipping initializeCall")
+        } else if (isCaller) {
+            // 主叫：只有Idle状态才初始化
+            if (currentState is CallState.Idle) {
+                android.util.Log.d("CallScreen", "Caller: State is Idle, initializing new call")
+                viewModel.initializeCall(callId, remoteUserId, isVideo, isCaller)
+            } else {
+                android.util.Log.d("CallScreen", "Caller: State is $currentState, not initializing")
+            }
+        } else {
+            // 被叫（来电）：如果不是活跃通话，重置状态后初始化
+            android.util.Log.d("CallScreen", "Callee: Resetting state and initializing call")
+            viewModel.resetState()
+            viewModel.initializeCall(callId, remoteUserId, isVideo, isCaller)
+        }
     }
 
+    // 请求通知权限（Android 13+）
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        android.util.Log.d("CallScreen", "Notification permission: $isGranted")
+    }
+
+    // 请求通话和相机权限
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -76,6 +132,15 @@ fun CallScreen(
     }
 
     LaunchedEffect(Unit) {
+        // 检查并请求通知权限（Android 13+）
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            val notificationPermission = android.Manifest.permission.POST_NOTIFICATIONS
+            if (ContextCompat.checkSelfPermission(context, notificationPermission) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(notificationPermission)
+            }
+        }
+        
+        // 请求通话和相机权限
         val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (isVideo) {
             permissions.add(Manifest.permission.CAMERA)
@@ -96,11 +161,15 @@ fun CallScreen(
         topBar = {
             TopAppBar(
                 title = { Text(if (isVideo) "视频通话" else "语音通话") },
-                navigationIcon = {
-                    IconButton(onClick = { viewModel.forceEndCall(); onEndCall() }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-                    }
+navigationIcon = {
+                IconButton(onClick = {
+                    // 返回按钮只返回，不结束通话（结束通话需要点击专门的结束按钮）
+                    android.util.Log.d("CallScreen", "Back button clicked - just navigate back, not ending call")
+                    onEndCall()
+                }) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = "返回")
                 }
+            }
             )
         }
     ) { padding ->
@@ -414,10 +483,14 @@ is CallState.Ended -> {
         Spacer(modifier = Modifier.height(24.dp))
         Button(onClick = onEndCall) { Text("返回") }
     }
-    // 同时使用LaunchedEffect确保自动返回
-    LaunchedEffect(Unit) {
-        delay(1500) // 显示1.5秒后自动返回
-        onEndCall()
+    // 同时使用LaunchedEffect确保自动返回（使用state防止重复执行）
+    var hasAutoReturned by remember { mutableStateOf(false) }
+    if (!hasAutoReturned) {
+        LaunchedEffect(Unit) {
+            delay(1500) // 显示1.5秒后自动返回
+            hasAutoReturned = true
+            onEndCall()
+        }
     }
 }
 
