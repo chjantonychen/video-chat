@@ -33,10 +33,12 @@ object CallNotificationManager {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "视频通话",
-                NotificationManager.IMPORTANCE_HIGH
+                NotificationManager.IMPORTANCE_LOW  // 【关键修复】改为LOW，禁用通知铃声
             ).apply {
                 description = "视频通话通知"
                 setShowBadge(true)
+                setSound(null, null)  // 【关键修复】禁用通知铃声
+                enableVibration(false)  // 禁用振动
             }
             notificationManager.createNotificationChannel(channel)
         }
