@@ -60,32 +60,33 @@ fun CallScreen(
     
     // 【关键修复】来电铃声播放器
     var ringtone by remember { mutableStateOf<android.media.Ringtone?>(null) }
+    var isRingtonePlaying by remember { mutableStateOf(false) }
     
-    // 监听状态变化，播放/停止铃声
-    LaunchedEffect(callState) {
-        when (callState) {
-            is CallState.Ringing -> {
-                // 来电状态，播放铃声
-                try {
-                    val ringtoneUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)
-                    ringtone = android.media.RingtoneManager.getRingtone(context, ringtoneUri)
-                    ringtone?.play()
-                    android.util.Log.d("CallScreen", "Playing incoming call ringtone")
-                } catch (e: Exception) {
-                    android.util.Log.e("CallScreen", "Failed to play ringtone", e)
-                }
+    // 监听状态变化，播放/停止铃声（使用key确保只触发一次）
+    LaunchedEffect(callState is CallState.Ringing) {
+        val isRinging = callState is CallState.Ringing
+        
+        if (isRinging && !isRingtonePlaying) {
+            // 来电状态且铃声未播放，播放铃声
+            try {
+                val ringtoneUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)
+                ringtone = android.media.RingtoneManager.getRingtone(context, ringtoneUri)
+                ringtone?.play()
+                isRingtonePlaying = true
+                android.util.Log.d("CallScreen", "Playing incoming call ringtone")
+            } catch (e: Exception) {
+                android.util.Log.e("CallScreen", "Failed to play ringtone", e)
             }
-            is CallState.Connected, is CallState.Ended, is CallState.Idle -> {
-                // 通话接通、结束或空闲，停止铃声
-                try {
-                    ringtone?.stop()
-                    ringtone = null
-                    android.util.Log.d("CallScreen", "Stopped ringtone")
-                } catch (e: Exception) {
-                    android.util.Log.e("CallScreen", "Failed to stop ringtone", e)
-                }
+        } else if (!isRinging && isRingtonePlaying) {
+            // 非来电状态且铃声正在播放，停止铃声
+            try {
+                ringtone?.stop()
+                ringtone = null
+                isRingtonePlaying = false
+                android.util.Log.d("CallScreen", "Stopped ringtone")
+            } catch (e: Exception) {
+                android.util.Log.e("CallScreen", "Failed to stop ringtone", e)
             }
-            else -> { /* 其他状态不处理 */ }
         }
     }
 
