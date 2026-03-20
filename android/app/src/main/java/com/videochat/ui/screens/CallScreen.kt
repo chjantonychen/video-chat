@@ -57,6 +57,37 @@ fun CallScreen(
             callManager.setIgnoreIncoming(false)
         }
     }
+    
+    // 【关键修复】来电铃声播放器
+    var ringtone by remember { mutableStateOf<android.media.Ringtone?>(null) }
+    
+    // 监听状态变化，播放/停止铃声
+    LaunchedEffect(callState) {
+        when (callState) {
+            is CallState.Ringing -> {
+                // 来电状态，播放铃声
+                try {
+                    val ringtoneUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)
+                    ringtone = android.media.RingtoneManager.getRingtone(context, ringtoneUri)
+                    ringtone?.play()
+                    android.util.Log.d("CallScreen", "Playing incoming call ringtone")
+                } catch (e: Exception) {
+                    android.util.Log.e("CallScreen", "Failed to play ringtone", e)
+                }
+            }
+            is CallState.Connected, is CallState.Ended, is CallState.Idle -> {
+                // 通话接通、结束或空闲，停止铃声
+                try {
+                    ringtone?.stop()
+                    ringtone = null
+                    android.util.Log.d("CallScreen", "Stopped ringtone")
+                } catch (e: Exception) {
+                    android.util.Log.e("CallScreen", "Failed to stop ringtone", e)
+                }
+            }
+            else -> { /* 其他状态不处理 */ }
+        }
+    }
 
     // 通话状态变化时检查是否需要返回
     

@@ -71,6 +71,7 @@ fun HomeScreen(
                 override fun onIncomingCall(callId: Long, fromUserId: Long, callType: Int, callerName: String) {
                     android.util.Log.d("HomeScreen", "========== onIncomingCall ==========")
                     android.util.Log.d("HomeScreen", "callId=$callId, fromUserId=$fromUserId, callType=$callType")
+                    // 【修复】不在HomeScreen播放铃声，由CallScreen处理
                     // 收到来电，跳转到通话界面
                     val isVideo = callType == 2
                     onNavigateToCall(callId, isVideo, false, fromUserId)
@@ -88,7 +89,7 @@ fun HomeScreen(
                 override fun onCallEnded(callId: Long) {
                     android.util.Log.d("HomeScreen", "========== onCallEnded ==========")
                     android.util.Log.d("HomeScreen", "callId=$callId")
-                    // 对方结束了通话，不需要特殊处理，会在CallScreen中处理
+                    // 通话结束，由CallScreen处理
                 }
             }
             callManager.connect(token, userId)
