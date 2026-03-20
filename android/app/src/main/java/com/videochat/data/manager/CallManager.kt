@@ -2,6 +2,7 @@ package com.videochat.data.manager
 
 import android.app.Application
 import android.util.Log
+import androidx.compose.runtime.mutableStateOf
 import com.videochat.data.model.CallSignal
 import com.videochat.data.websocket.CallWebSocketListener
 import com.videochat.data.websocket.WebSocketService
@@ -26,8 +27,9 @@ class CallManager private constructor(private val application: Application) {
     // 保存当前呼叫信息
     private var pendingCallToUserId: Long? = null
     private var pendingCallIsVideo: Boolean = false
-    // 标记是否正在通话中（防止挂断后再次触发）
-    private var isInCall: Boolean = false
+    // 【关键修复】使用mutableStateOf以便Compose可以观察变化
+    private var _isInCall = mutableStateOf(false)
+    val isInCall: Boolean get() = _isInCall.value
     
     // 【新增】标记是否应该忽略来电（当CallScreen打开时）
     private var shouldIgnoreIncoming: Boolean = false
@@ -44,25 +46,25 @@ class CallManager private constructor(private val application: Application) {
     fun setPendingCall(toUserId: Long, isVideo: Boolean) {
         pendingCallToUserId = toUserId
         pendingCallIsVideo = isVideo
-        isInCall = true
+        _isInCall.value = true
     }
 
     fun clearPendingCall() {
         pendingCallToUserId = null
         pendingCallIsVideo = false
-        isInCall = false
+        _isInCall.value = false
         shouldIgnoreIncoming = false  // 重置忽略标志
     }
 
     fun setInCall(inCall: Boolean) {
-        isInCall = inCall
+        _isInCall.value = inCall
     }
     
     // 【新增】设置忽略来电标志，当CallScreen打开时调用
     fun setIgnoreIncoming(ignore: Boolean) {
         shouldIgnoreIncoming = ignore
         if (ignore) {
-            isInCall = true
+            _isInCall.value = true
         }
         Log.d(TAG, "setIgnoreIncoming: $ignore")
     }

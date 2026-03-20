@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import android.util.Log
+import android.app.Application  // 【新增】导入Application
 import android.content.Context
 import com.videochat.data.local.PreferencesManager
 import com.videochat.data.manager.CallManager
@@ -228,6 +229,14 @@ fun FriendListItem(
     onVideoCall: () -> Unit = onClick,
     onVoiceCall: () -> Unit = onClick
 ) {
+    // 【关键修复】检查是否正在通话中，禁用通话按钮
+    val context = LocalContext.current
+    val callManager = remember {
+        CallManager.getInstance(context.applicationContext as Application)
+    }
+    // 直接读取 isInCall 属性，Compose 会自动观察变化
+    val isInCall = callManager.isInCall
+    
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -260,13 +269,19 @@ fun FriendListItem(
                 Text(friend.username, style = MaterialTheme.typography.bodySmall)
             }
             
-IconButton(onClick = { Log.d("HomeScreen", "Voice call button clicked for ${friend.username}"); onVoiceCall() }) {
-    Icon(Icons.Default.Call, contentDescription = "Voice Call")
-}
+            IconButton(
+                onClick = { Log.d("HomeScreen", "Voice call button clicked for ${friend.username}"); onVoiceCall() },
+                enabled = !isInCall  // 通话中禁用
+            ) {
+                Icon(Icons.Default.Call, contentDescription = "Voice Call")
+            }
 
-IconButton(onClick = { Log.d("HomeScreen", "Video call button clicked for ${friend.username}"); onVideoCall() }) {
-    Icon(Icons.Default.Videocam, contentDescription = "Video Call")
-}
+            IconButton(
+                onClick = { Log.d("HomeScreen", "Video call button clicked for ${friend.username}"); onVideoCall() },
+                enabled = !isInCall  // 通话中禁用
+            ) {
+                Icon(Icons.Default.Videocam, contentDescription = "Video Call")
+            }
         }
     }
 }

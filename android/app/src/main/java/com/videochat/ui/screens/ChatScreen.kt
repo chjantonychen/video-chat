@@ -30,6 +30,7 @@ import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.videochat.data.api.RetrofitClient
 import com.videochat.data.local.PreferencesManager
+import com.videochat.data.manager.CallManager  // 【新增】导入CallManager
 import com.videochat.data.model.MESSAGE_TYPE_IMAGE
 import com.videochat.data.model.MESSAGE_TYPE_TEXT
 import com.videochat.data.model.MESSAGE_TYPE_VOICE
@@ -257,11 +258,27 @@ messageRepository.uploadFile(tempFile).onSuccess { url ->
                     }
                 },
                 actions = {
-IconButton(onClick = { Log.d("ChatScreen", "Voice call button clicked"); onStartCall(false) }) {
-            Icon(Icons.Default.Call, contentDescription = "语音通话")
-        }
+                    // 【关键修复】检查是否正在通话中，禁用通话按钮
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    val callManager = remember {
+                        com.videochat.data.manager.CallManager.getInstance(
+                            context.applicationContext as android.app.Application
+                        )
+                    }
+                    // 直接读取 isInCall 属性，Compose 会自动观察变化
+                    val isInCall = callManager.isInCall
+                    
+                    IconButton(
+                        onClick = { Log.d("ChatScreen", "Voice call button clicked"); onStartCall(false) },
+                        enabled = !isInCall  // 通话中禁用
+                    ) {
+                        Icon(Icons.Default.Call, contentDescription = "语音通话")
+                    }
 
-        IconButton(onClick = { Log.d("ChatScreen", "Video call button clicked"); onStartCall(true) }) {
+                    IconButton(
+                        onClick = { Log.d("ChatScreen", "Video call button clicked"); onStartCall(true) },
+                        enabled = !isInCall  // 通话中禁用
+                    ) {
                         Icon(Icons.Default.Videocam, contentDescription = "视频通话")
                     }
                 }
