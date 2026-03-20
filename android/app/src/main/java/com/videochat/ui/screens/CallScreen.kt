@@ -413,8 +413,9 @@ navigationIcon = {
                                 )
                             ) {
                                 Icon(
-                                    if (isSpeakerOn) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                                    contentDescription = "扬声器",
+                                    // 【关键修复】扬声器改为听筒/外放两种状态显示
+                                    if (isSpeakerOn) Icons.Default.VolumeUp else Icons.Default.VolumeDown,
+                                    contentDescription = if (isSpeakerOn) "外放" else "听筒",
                                     modifier = Modifier.size(32.dp)
                                 )
                             }

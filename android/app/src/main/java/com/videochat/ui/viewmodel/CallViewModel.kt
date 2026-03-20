@@ -139,6 +139,9 @@ private var currentCallId: Long = 0
         this.remoteUserId = remoteUserId
         this.isVideoCall = isVideo
         this.callerFlag = isCaller
+        
+        // 【关键修复】初始化时默认使用听筒，不使用外放
+        _isSpeakerOn.value = false
 
         android.util.Log.d("CallViewModel", "========== initializeCall ==========")
         android.util.Log.d("CallViewModel", "callId=$callId, remoteUserId=$remoteUserId, isVideo=$isVideo, isCaller=$isCaller")
@@ -166,9 +169,11 @@ private var currentCallId: Long = 0
                 onIceConnectionState = { state ->
                     android.util.Log.d("CallViewModel", "========== onIceConnectionState: $state ==========")
                     when (state) {
-PeerConnection.IceConnectionState.CONNECTED -> {
+            PeerConnection.IceConnectionState.CONNECTED -> {
                 _callState.value = CallState.Connected
                 android.util.Log.d("CallViewModel", "Call connected!")
+                // 【关键修复】通话连接成功后设置音频输出为听筒
+                webRTCManager?.setSpeakerEnabled(_isSpeakerOn.value)
                 // 显示通知栏通知
                 CallNotificationManager.showCallNotification(
                     getApplication(),
@@ -431,6 +436,8 @@ fun forceEndCall() {
 
     fun toggleSpeaker() {
         _isSpeakerOn.value = !_isSpeakerOn.value
+        // 【关键修复】设置音频路由：true=外放(speaker), false=听筒(earpiece)
+        webRTCManager?.setSpeakerEnabled(_isSpeakerOn.value)
     }
 
     fun toggleCamera() {
@@ -439,6 +446,7 @@ fun forceEndCall() {
     }
 
     fun switchCamera() {
+        // 【修复】恢复摄像头切换功能
         webRTCManager?.switchCamera()
     }
 

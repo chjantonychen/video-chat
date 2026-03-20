@@ -647,6 +647,18 @@ class WebRTCManager(private val context: Context) {
         localAudioTrack?.setEnabled(enabled)
     }
     
+    // 【关键修复】设置音频输出设备 - 听筒/外放切换
+    fun setSpeakerEnabled(enabled: Boolean) {
+        try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+            audioManager.isSpeakerphoneOn = enabled
+            Log.d(TAG, "setSpeakerEnabled: $enabled")
+        } catch (e: Exception) {
+            Log.e(TAG, "setSpeakerEnabled error: ${e.message}")
+        }
+    }
+    
     fun setVideoEnabled(enabled: Boolean) {
         localVideoTrack?.setEnabled(enabled)
         if (!enabled) {
@@ -666,7 +678,13 @@ class WebRTCManager(private val context: Context) {
     
     fun switchCamera() {
         try {
-            (videoCapturer as? Camera2Capturer)?.switchCamera(null)
+            // 【关键修复】支持 Camera1 和 Camera2 的摄像头切换
+            when (val capturer = videoCapturer) {
+                is Camera2Capturer -> capturer.switchCamera(null)
+                is CameraVideoCapturer -> capturer.switchCamera(null)
+                else -> Log.w(TAG, "Camera capturer type not supported for switching: ${capturer?.javaClass?.simpleName}")
+            }
+            Log.d(TAG, "switchCamera called")
         } catch (e: Exception) {
             Log.e(TAG, "Switch camera error: ${e.message}")
         }
